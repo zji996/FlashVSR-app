@@ -1,0 +1,3 @@
+[submodule "third_party/FlashVSR"]
+	path = third_party/FlashVSR
+	url = https://github.com/OpenImagingLab/FlashVSR

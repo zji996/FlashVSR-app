@@ -1,0 +1,49 @@
+# General artifacts
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.parcel-cache/
+.npm/
+.pnpm-debug.log
+yarn-error.log
+.eslintcache
+.stylelintcache
+
+# Python / backend
+__pycache__/
+*.py[cod]
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+.venv/
+venv/
+
+# IDE / tooling
+.idea/
+.vscode/
+.history/
+.vs/
+
+# Docker / containers
+*.pid
+*.pid.lock
+
+# OS / misc
+.Trash-*
+ehthumbs.db
+Desktop.ini
