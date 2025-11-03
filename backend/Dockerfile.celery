@@ -1,0 +1,8 @@
+# Celery Worker Dockerfile (继承自backend)
+FROM flashvsr-backend:latest
+
+WORKDIR /app/backend
+
+# Celery worker启动命令
+CMD ["celery", "-A", "app.core.celery_app", "worker", "--loglevel=info", "--concurrency=1", "--max-tasks-per-child=1"]
+

@@ -1,0 +1,140 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: flashvsr-backend:latest
+    container_name: flashvsr-backend
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://flashvsr:flashvsr@postgres:5432/flashvsr
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      STORAGE_ROOT: /app/storage
+      MODEL_ROOT: /app/models
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/backend/app
+      - ./storage:/app/storage
+      - ./models:/app/models:ro
+      - ./third_party/FlashVSR:/app/third_party/FlashVSR:ro
+    depends_on:
+      - postgres
+      - redis
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: flashvsr-backend:latest
+    container_name: flashvsr-celery
+    command: >
+      celery -A app.core.celery_app worker
+      --loglevel=info
+      --concurrency=1
+      --max-tasks-per-child=1
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://flashvsr:flashvsr@postgres:5432/flashvsr
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      STORAGE_ROOT: /app/storage
+      MODEL_ROOT: /app/models
+    volumes:
+      - ./backend/app:/app/backend/app
+      - ./storage:/app/storage
+      - ./models:/app/models:ro
+      - ./third_party/FlashVSR:/app/third_party/FlashVSR:ro
+    depends_on:
+      - backend
+      - postgres
+      - redis
+      - postgres
+      - redis
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: flashvsr-backend:latest
+    container_name: flashvsr-celery-beat
+    command: >
+      celery -A app.core.celery_app beat
+      --loglevel=info
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://flashvsr:flashvsr@postgres:5432/flashvsr
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      STORAGE_ROOT: /app/storage
+      MODEL_ROOT: /app/models
+    volumes:
+      - ./backend/app:/app/backend/app
+      - ./storage:/app/storage
+      - ./models:/app/models:ro
+      - ./third_party/FlashVSR:/app/third_party/FlashVSR:ro
+    depends_on:
+      - backend
+      - postgres
+      - redis
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: flashvsr-frontend:latest
+    container_name: flashvsr-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: flashvsr-postgres
+    environment:
+      POSTGRES_DB: flashvsr
+      POSTGRES_USER: flashvsr
+      POSTGRES_PASSWORD: flashvsr
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: flashvsr-redis
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
+  redisdata:

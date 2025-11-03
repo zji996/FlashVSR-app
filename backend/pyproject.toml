@@ -1,0 +1,39 @@
+[project]
+name = "flashvsr-backend"
+version = "0.1.0"
+description = "FlashVSR Backend API"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "psycopg2-binary>=2.9.9",
+    "redis>=5.0.0",
+    "celery>=5.4.0",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "aiofiles>=24.1.0",
+    "pillow>=11.0.0",
+    "imageio>=2.37.0",
+    "imageio-ffmpeg>=0.6.0",
+    "torch>=2.6.0",
+    "torchvision>=0.21.0",
+    "einops>=0.8.1",
+    "numpy>=1.26.4",
+    "tqdm>=4.66.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",
+]
