@@ -55,6 +55,7 @@ def process_video_task(self, task_id: str):
         sparse_ratio = params.get("sparse_ratio", settings.DEFAULT_SPARSE_RATIO)
         local_range = params.get("local_range", settings.DEFAULT_LOCAL_RANGE)
         seed = params.get("seed", settings.DEFAULT_SEED)
+        model_variant = params.get("model_variant", settings.DEFAULT_MODEL_VARIANT)
         
         # 进度回调函数
         def progress_callback(processed_frames: int, total_frames: int, avg_frame_time: float):
@@ -91,6 +92,7 @@ def process_video_task(self, task_id: str):
             sparse_ratio=sparse_ratio,
             local_range=local_range,
             seed=seed,
+            model_variant=model_variant,
             progress_callback=progress_callback,
         )
         

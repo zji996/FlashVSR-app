@@ -34,6 +34,7 @@ async def create_task(
     sparse_ratio: float = Form(default=2.0),
     local_range: int = Form(default=11),
     seed: int = Form(default=0),
+    model_variant: str = Form(default=settings.DEFAULT_MODEL_VARIANT),
     db: Session = Depends(get_db),
 ):
     """
@@ -44,6 +45,7 @@ async def create_task(
     - **sparse_ratio**: 稀疏比率 (1.0-4.0)
     - **local_range**: 局部范围 (7-15)
     - **seed**: 随机种子
+    - **model_variant**: FlashVSR 模型变体（tiny / tiny_long / full）
     """
     # 验证文件类型
     if not file.filename:
@@ -104,6 +106,7 @@ async def create_task(
             sparse_ratio=sparse_ratio,
             local_range=local_range,
             seed=seed,
+            model_variant=model_variant,
         )
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.errors()) from exc

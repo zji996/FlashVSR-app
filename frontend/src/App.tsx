@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { systemApi } from './api/system';
 import HomePage from './pages/HomePage';
 import TaskDetailPage from './pages/TaskDetailPage';
-import type { SystemStatus } from './types';
+import { MODEL_VARIANT_LABELS, type SystemStatus } from './types';
 
 const numericTaskKeys: Array<keyof SystemStatus['tasks']> = [
   'total',
@@ -71,6 +71,13 @@ function App() {
                   任务: {systemStatusForDisplay.tasks.processing} 处理中 /{' '}
                   {systemStatusForDisplay.tasks.pending} 等待中
                 </div>
+                {systemStatusForDisplay.flashvsr && (
+                  <div className="text-gray-700">
+                    FlashVSR {systemStatusForDisplay.flashvsr.version} · 默认{' '}
+                    {MODEL_VARIANT_LABELS[systemStatusForDisplay.flashvsr.default_variant]
+                      ?? systemStatusForDisplay.flashvsr.default_variant}
+                  </div>
+                )}
               </div>
             )}
           </div>

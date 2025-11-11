@@ -16,6 +16,7 @@ export const tasksApi = {
     formData.append('sparse_ratio', parameters.sparse_ratio.toString());
     formData.append('local_range', parameters.local_range.toString());
     formData.append('seed', parameters.seed.toString());
+    formData.append('model_variant', parameters.model_variant);
 
     const response = await apiClient.post<Task>('/api/tasks/', formData, {
       headers: {

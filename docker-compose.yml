@@ -6,7 +6,7 @@ services:
     image: flashvsr-backend:latest
     container_name: flashvsr-backend
     env_file:
-      - .env
+      - backend/.env
     environment:
       DATABASE_URL: postgresql+psycopg2://flashvsr:flashvsr@postgres:5432/flashvsr
       REDIS_URL: redis://redis:6379/0
@@ -20,8 +20,8 @@ services:
       - "8000:8000"
     volumes:
       - ./backend/app:/app/backend/app
-      - ./storage:/app/storage
-      - ./models:/app/models:ro
+      - ./backend/storage:/app/storage
+      - ./backend/models:/app/models:ro
       - ./third_party/FlashVSR:/app/third_party/FlashVSR:ro
     depends_on:
       - postgres
@@ -46,7 +46,7 @@ services:
       --concurrency=1
       --max-tasks-per-child=1
     env_file:
-      - .env
+      - backend/.env
     environment:
       DATABASE_URL: postgresql+psycopg2://flashvsr:flashvsr@postgres:5432/flashvsr
       REDIS_URL: redis://redis:6379/0
@@ -56,8 +56,8 @@ services:
       MODEL_ROOT: /app/models
     volumes:
       - ./backend/app:/app/backend/app
-      - ./storage:/app/storage
-      - ./models:/app/models:ro
+      - ./backend/storage:/app/storage
+      - ./backend/models:/app/models:ro
       - ./third_party/FlashVSR:/app/third_party/FlashVSR:ro
     depends_on:
       - backend
@@ -81,7 +81,7 @@ services:
       celery -A app.core.celery_app beat
       --loglevel=info
     env_file:
-      - .env
+      - backend/.env
     environment:
       DATABASE_URL: postgresql+psycopg2://flashvsr:flashvsr@postgres:5432/flashvsr
       REDIS_URL: redis://redis:6379/0
@@ -91,8 +91,8 @@ services:
       MODEL_ROOT: /app/models
     volumes:
       - ./backend/app:/app/backend/app
-      - ./storage:/app/storage
-      - ./models:/app/models:ro
+      - ./backend/storage:/app/storage
+      - ./backend/models:/app/models:ro
       - ./third_party/FlashVSR:/app/third_party/FlashVSR:ro
     depends_on:
       - backend
@@ -103,8 +103,12 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        - VITE_API_BASE_URL=http://localhost:8000
     image: flashvsr-frontend:latest
     container_name: flashvsr-frontend
+    env_file:
+      - frontend/.env
     ports:
       - "3000:80"
     depends_on:

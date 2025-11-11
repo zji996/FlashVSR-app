@@ -1,104 +1,109 @@
 """FlashVSR 推理服务封装."""
 
-import os
+from __future__ import annotations
+
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Callable
+from threading import Lock
+from typing import Any, Callable, Optional
 
-import torch
-import numpy as np
-from PIL import Image
 import imageio
-from tqdm import tqdm
+import numpy as np
+import torch
 from einops import rearrange
+from PIL import Image
+from tqdm import tqdm
 
 from app.config import settings
 
-# 添加FlashVSR到Python路径
-THIRD_PARTY_ROOT = settings.THIRD_PARTY_ROOT
+# 将 FlashVSR 加入 Python Path
 FLASHVSR_PATH = settings.THIRD_PARTY_FLASHVSR_PATH
 if str(FLASHVSR_PATH) not in sys.path:
     sys.path.insert(0, str(FLASHVSR_PATH))
 
-from diffsynth import ModelManager, FlashVSRTinyPipeline
+from diffsynth import (  # type: ignore  # noqa: E402
+    FlashVSRFullPipeline,
+    FlashVSRTinyLongPipeline,
+    FlashVSRTinyPipeline,
+    ModelManager,
+)
 
-# 导入FlashVSR工具函数
+# 导入 FlashVSR 工具函数
 WANVSR_PATH = FLASHVSR_PATH / "examples" / "WanVSR"
 if str(WANVSR_PATH) not in sys.path:
     sys.path.insert(0, str(WANVSR_PATH))
 
-from utils.utils import Buffer_LQ4x_Proj
-from utils.TCDecoder import build_tcdecoder
+from utils.TCDecoder import build_tcdecoder  # type: ignore  # noqa: E402
+from utils.utils import Causal_LQ4x_Proj  # type: ignore  # noqa: E402
+
+
+@dataclass
+class PipelineHandle:
+    """缓存的 Pipeline 实例信息."""
+
+    variant: str
+    pipeline: Any
+    device: str
+    default_kwargs: dict[str, Any]
 
 
 class FlashVSRService:
-    """FlashVSR推理服务（单例模式）."""
-    
-    _instance: Optional['FlashVSRService'] = None
-    _pipeline = None
-    
+    """FlashVSR 推理服务（单例 + 变体缓存)."""
+
+    SUPPORTED_VARIANTS: tuple[str, ...] = ("tiny", "tiny_long", "full")
+    BASE_MODEL_FILES: tuple[str, ...] = (
+        "diffusion_pytorch_model_streaming_dmd.safetensors",
+        "LQ_proj_in.ckpt",
+        "TCDecoder.ckpt",
+    )
+    FULL_ONLY_FILES: tuple[str, ...] = ("Wan2.1_VAE.pth",)
+
+    _instance: Optional["FlashVSRService"] = None
+    _pipelines: dict[str, PipelineHandle] = {}
+    _lock: Lock = Lock()
+
     def __new__(cls):
-        """单例模式."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-    
-    def __init__(self):
-        """初始化."""
-        if self._pipeline is None:
-            self._init_pipeline()
-    
-    def _init_pipeline(self):
-        """初始化FlashVSR pipeline."""
-        print("🚀 正在初始化 FlashVSR pipeline...")
-        
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"📍 使用设备: {device}")
-        
-        if device == "cuda":
-            print(f"🎮 GPU: {torch.cuda.get_device_name(0)}")
-        
-        # 加载模型
-        mm = ModelManager(torch_dtype=torch.bfloat16, device="cpu")
-        model_path = settings.FLASHVSR_MODEL_PATH
 
-        mm.load_models(
-            [
-                str(model_path / "diffusion_pytorch_model_streaming_dmd.safetensors"),
-            ]
-        )
-        
-        self._pipeline = FlashVSRTinyPipeline.from_model_manager(mm, device=device)
-        
-        # 加载LQ投影层
-        self._pipeline.denoising_model().LQ_proj_in = Buffer_LQ4x_Proj(
-            in_dim=3, out_dim=1536, layer_num=1
-        ).to(device, dtype=torch.bfloat16)
-        
-        lq_proj_path = model_path / "LQ_proj_in.ckpt"
-        if lq_proj_path.exists():
-            self._pipeline.denoising_model().LQ_proj_in.load_state_dict(
-                torch.load(lq_proj_path, map_location="cpu"), strict=True
-            )
-        self._pipeline.denoising_model().LQ_proj_in.to(device)
-        
-        # 加载TCDecoder
-        multi_scale_channels = [512, 256, 128, 128]
-        self._pipeline.TCDecoder = build_tcdecoder(
-            new_channels=multi_scale_channels, new_latent_channels=16 + 768
-        )
-        self._pipeline.TCDecoder.load_state_dict(
-            torch.load(model_path / "TCDecoder.ckpt"), strict=False
-        )
-        
-        self._pipeline.to(device)
-        self._pipeline.enable_vram_management(num_persistent_param_in_dit=None)
-        self._pipeline.init_cross_kv()
-        self._pipeline.load_models_to_device(["dit", "vae"])
-        
-        print("✅ FlashVSR pipeline 初始化完成")
-    
+    def __init__(self) -> None:
+        # Pipeline 延迟加载，首次调用指定变体时再初始化
+        pass
+
+    @classmethod
+    def inspect_assets(cls) -> dict[str, Any]:
+        """检查模型权重情况，供系统状态和诊断使用."""
+
+        model_path = settings.FLASHVSR_MODEL_PATH
+        file_status: dict[str, bool] = {}
+
+        for filename in cls.BASE_MODEL_FILES + cls.FULL_ONLY_FILES:
+            file_status[filename] = (model_path / filename).exists()
+
+        def _ready(extra: tuple[str, ...] = ()) -> bool:
+            base_ready = all(file_status[name] for name in cls.BASE_MODEL_FILES)
+            extra_ready = all(file_status[name] for name in extra)
+            return base_ready and extra_ready
+
+        ready_variants = {
+            "tiny": _ready(),
+            "tiny_long": _ready(),
+            "full": _ready(cls.FULL_ONLY_FILES),
+        }
+
+        missing_files = [name for name, ok in file_status.items() if not ok]
+
+        return {
+            "model_path": str(model_path),
+            "exists": model_path.exists(),
+            "files": file_status,
+            "ready_variants": ready_variants,
+            "missing_files": missing_files,
+        }
+
     def process_video(
         self,
         input_path: str,
@@ -107,63 +112,59 @@ class FlashVSRService:
         sparse_ratio: float = 2.0,
         local_range: int = 11,
         seed: int = 0,
+        model_variant: str = settings.DEFAULT_MODEL_VARIANT,
         progress_callback: Optional[Callable[[int, int, float], None]] = None,
     ) -> dict:
-        """
-        处理视频超分辨率.
-        
-        Args:
-            input_path: 输入视频路径
-            output_path: 输出视频路径
-            scale: 超分倍数
-            sparse_ratio: 稀疏比率
-            local_range: 局部范围
-            seed: 随机种子
-            progress_callback: 进度回调函数(processed_frames, total_frames, avg_time)
-        
-        Returns:
-            包含视频信息的字典
-        """
-        print(f"📹 开始处理视频: {input_path}")
+        """处理视频超分辨率."""
+
+        variant = self._normalize_variant(model_variant)
+        handle = self._get_pipeline_handle(variant)
+        pipeline = handle.pipeline
+        device = handle.device
+
+        print(
+            f"📹 开始处理视频: {input_path} | 模型: FlashVSR {settings.FLASHVSR_VERSION} ({variant})"
+        )
         start_time = time.time()
-        
+
         # 准备输入
         video_tensor, height, width, total_frames, fps = self._prepare_input(
-            input_path, scale
+            input_path, scale, device
         )
-        
+
         print(f"📊 视频信息: {width}x{height}, {total_frames}帧, {fps}fps")
-        
-        # 超分处理
-        device = "cuda" if torch.cuda.is_available() else "cpu"
 
         if progress_callback and total_frames:
             progress_callback(0, total_frames, 0.0)
 
         # 处理视频
         infer_start = time.time()
-        output_video = self._pipeline(
-            prompt="",
-            negative_prompt="",
-            cfg_scale=1.0,
-            num_inference_steps=1,
-            seed=seed,
-            LQ_video=video_tensor,
-            num_frames=total_frames,
-            height=height,
-            width=width,
-            is_full_block=False,
-            if_buffer=True,
-            topk_ratio=sparse_ratio * 768 * 1280 / (height * width),
-            kv_ratio=3.0,
-            local_range=local_range,
-            color_fix=True,
-        )
+        pipeline_kwargs = {
+            "prompt": "",
+            "negative_prompt": "",
+            "cfg_scale": 1.0,
+            "num_inference_steps": 1,
+            "seed": seed,
+            "LQ_video": video_tensor,
+            "num_frames": total_frames,
+            "height": height,
+            "width": width,
+            "is_full_block": False,
+            "if_buffer": True,
+            "topk_ratio": sparse_ratio * 768 * 1280 / (height * width),
+            "kv_ratio": 3.0,
+            "local_range": local_range,
+            "color_fix": True,
+        }
+        pipeline_kwargs.update(handle.default_kwargs)
+
+        with torch.inference_mode():
+            output_video = pipeline(**pipeline_kwargs)
         inference_time = time.time() - infer_start
-        
+
         # 转换为视频帧
         frames = self._tensor2video(output_video)
-        
+
         # 保存视频
         self._save_video(
             frames,
@@ -173,16 +174,15 @@ class FlashVSRService:
             total_frames=total_frames,
             start_time=start_time,
         )
-        
+
         total_time = time.time() - start_time
-        
+
         print(f"✅ 视频处理完成: {output_path}")
         print(f"⏱️  总耗时: {total_time:.2f}秒")
-        
-        # 清理GPU缓存
+
         if device == "cuda":
             torch.cuda.empty_cache()
-        
+
         return {
             "width": width,
             "height": height,
@@ -191,45 +191,45 @@ class FlashVSRService:
             "processed_frames": len(frames),
             "inference_time": inference_time,
             "processing_time": total_time,
+            "model_variant": variant,
         }
-    
-    def _prepare_input(self, path: str, scale: float):
-        """准备输入视频tensor."""
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    def _prepare_input(self, path: str, scale: float, device: str):
+        """准备输入视频 tensor."""
         dtype = torch.bfloat16
-        
+
         # 读取视频
         reader = imageio.get_reader(path)
         first_frame = Image.fromarray(reader.get_data(0)).convert('RGB')
         w0, h0 = first_frame.size
-        
+
         # 获取元数据
         meta = {}
         try:
             meta = reader.get_meta_data()
-        except:
+        except Exception:
             pass
-        
+
         fps_val = meta.get('fps', 30)
         fps = int(round(fps_val)) if isinstance(fps_val, (int, float)) else 30
-        
+
         # 获取总帧数
         total_frames = self._count_frames(reader, meta)
-        
+
         print(f"原始分辨率: {w0}x{h0}, 原始帧数: {total_frames}, FPS: {fps}")
-        
+
         # 计算目标尺寸
         sW, sH, tW, tH = self._compute_scaled_dims(w0, h0, scale)
         print(f"目标分辨率: {tW}x{tH} (缩放 {scale}x)")
-        
+
         # 读取所有帧
         frames = []
         indices = list(range(total_frames)) + [total_frames - 1] * 4
         F = self._largest_8n1_leq(len(indices))
         indices = indices[:F]
-        
+
         print(f"处理帧数: {F}")
-        
+
         try:
             for i in tqdm(indices, desc="加载视频帧"):
                 img = Image.fromarray(reader.get_data(i)).convert('RGB')
@@ -237,10 +237,10 @@ class FlashVSRService:
                 frames.append(self._pil_to_tensor(img_out, dtype, device))
         finally:
             reader.close()
-        
+
         video_tensor = torch.stack(frames, 0).permute(1, 0, 2, 3).unsqueeze(0)
         return video_tensor, tH, tW, F, fps
-    
+
     @staticmethod
     def _count_frames(reader, meta):
         """计算视频总帧数."""
@@ -248,59 +248,59 @@ class FlashVSRService:
             nf = meta.get('nframes', None)
             if isinstance(nf, int) and nf > 0:
                 return nf
-        except:
+        except Exception:
             pass
-        
+
         try:
             return reader.count_frames()
-        except:
+        except Exception:
             n = 0
             try:
                 while True:
                     reader.get_data(n)
                     n += 1
-            except:
+            except Exception:
                 return n
-    
+
     @staticmethod
     def _compute_scaled_dims(w0: int, h0: int, scale: float, multiple: int = 128):
         """计算缩放后的尺寸."""
         sW = int(round(w0 * scale))
         sH = int(round(h0 * scale))
-        
+
         tW = (sW // multiple) * multiple
         tH = (sH // multiple) * multiple
-        
+
         return sW, sH, tW, tH
-    
+
     @staticmethod
     def _upscale_and_crop(img: Image.Image, scale: float, tW: int, tH: int):
         """放大并居中裁剪."""
         w0, h0 = img.size
         sW = int(round(w0 * scale))
         sH = int(round(h0 * scale))
-        
+
         up = img.resize((sW, sH), Image.BICUBIC)
         l = (sW - tW) // 2
         t = (sH - tH) // 2
         return up.crop((l, t, l + tW, t + tH))
-    
+
     @staticmethod
     def _pil_to_tensor(img: Image.Image, dtype, device):
-        """PIL图像转tensor."""
+        """PIL 图像转 tensor."""
         t = torch.from_numpy(np.asarray(img, np.uint8)).to(
             device=device, dtype=torch.float32
         )
         t = t.permute(2, 0, 1) / 255.0 * 2.0 - 1.0
         return t.to(dtype)
-    
+
     @staticmethod
     def _tensor2video(frames):
-        """Tensor转视频帧."""
+        """Tensor 转视频帧."""
         frames = rearrange(frames, "C T H W -> T H W C")
         frames = ((frames.float() + 1) * 127.5).clip(0, 255).cpu().numpy().astype(np.uint8)
         return [Image.fromarray(frame) for frame in frames]
-    
+
     @staticmethod
     def _save_video(
         frames,
@@ -333,8 +333,106 @@ class FlashVSRService:
             elapsed = max(time.time() - begin, 0.0)
             avg_time = elapsed / target_total if target_total else 0.0
             progress_callback(target_total, target_total, avg_time)
-    
+
     @staticmethod
     def _largest_8n1_leq(n: int) -> int:
         """返回最大的 8n+1 <= n."""
         return 0 if n < 1 else ((n - 1) // 8) * 8 + 1
+
+    def _get_pipeline_handle(self, variant: str) -> PipelineHandle:
+        """获取或初始化指定变体的 pipeline."""
+
+        if variant not in self._pipelines:
+            with self._lock:
+                if variant not in self._pipelines:
+                    self._pipelines[variant] = self._build_pipeline_handle(variant)
+        return self._pipelines[variant]
+
+    def _build_pipeline_handle(self, variant: str) -> PipelineHandle:
+        """根据变体初始化 pipeline 并缓存."""
+
+        print(f"🚀 初始化 FlashVSR {settings.FLASHVSR_VERSION} pipeline ({variant})...")
+        model_path = settings.FLASHVSR_MODEL_PATH
+
+        needed_files = list(self.BASE_MODEL_FILES)
+        if variant == "full":
+            needed_files += list(self.FULL_ONLY_FILES)
+
+        missing = [name for name in needed_files if not (model_path / name).exists()]
+        if missing:
+            raise FileNotFoundError(
+                "缺少 FlashVSR 权重文件: " + ", ".join(missing) + f" (根目录: {model_path})"
+            )
+
+        mm = ModelManager(torch_dtype=torch.bfloat16, device="cpu")
+        weights_to_load = [str(model_path / self.BASE_MODEL_FILES[0])]
+        if variant == "full":
+            weights_to_load.append(str(model_path / self.FULL_ONLY_FILES[0]))
+        mm.load_models(weights_to_load)
+
+        pipeline_cls_map = {
+            "tiny": FlashVSRTinyPipeline,
+            "tiny_long": FlashVSRTinyLongPipeline,
+            "full": FlashVSRFullPipeline,
+        }
+        pipeline_cls = pipeline_cls_map[variant]
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"📍 使用设备: {device}")
+        if device == "cuda":
+            print(f"🎮 GPU: {torch.cuda.get_device_name(0)}")
+
+        pipe = pipeline_cls.from_model_manager(mm, device=device)
+
+        # 配置 LQ 投影层
+        lq_proj = Causal_LQ4x_Proj(in_dim=3, out_dim=1536, layer_num=1).to(
+            device, dtype=torch.bfloat16
+        )
+        lq_proj.load_state_dict(
+            torch.load(model_path / "LQ_proj_in.ckpt", map_location="cpu"),
+            strict=True,
+        )
+        lq_proj.to(device)
+        pipe.denoising_model().LQ_proj_in = lq_proj
+
+        # 配置 TCDecoder
+        multi_scale_channels = [512, 256, 128, 128]
+        pipe.TCDecoder = build_tcdecoder(
+            new_channels=multi_scale_channels, new_latent_channels=16 + 768
+        )
+        pipe.TCDecoder.load_state_dict(
+            torch.load(model_path / "TCDecoder.ckpt", map_location="cpu"),
+            strict=False,
+        )
+
+        default_kwargs: dict[str, Any] = {}
+        if variant == "full":
+            pipe.vae.model.encoder = None
+            pipe.vae.model.conv1 = None
+            default_kwargs = {"tiled": False}
+
+        pipe.to(device)
+        pipe.enable_vram_management(num_persistent_param_in_dit=None)
+        pipe.init_cross_kv()
+        pipe.load_models_to_device(["dit", "vae"])
+
+        print(f"✅ FlashVSR pipeline ({variant}) 初始化完成")
+        return PipelineHandle(
+            variant=variant,
+            pipeline=pipe,
+            device=device,
+            default_kwargs=default_kwargs,
+        )
+
+    def _normalize_variant(self, variant: Optional[str]) -> str:
+        value = (variant or settings.DEFAULT_MODEL_VARIANT).lower()
+        if value not in self.SUPPORTED_VARIANTS:
+            raise ValueError(
+                f"不支持的模型变体: {variant}. 可选: {', '.join(self.SUPPORTED_VARIANTS)}"
+            )
+        asset_status = self.inspect_assets().get("ready_variants", {})
+        if not asset_status.get(value, False):
+            raise RuntimeError(
+                f"模型变体 {value} 缺少必要权重，请参考 README 下载 FlashVSR {settings.FLASHVSR_VERSION} 权重"
+            )
+        return value

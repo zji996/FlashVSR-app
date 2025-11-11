@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: flashvsr-postgres-dev
+    environment:
+      POSTGRES_DB: flashvsr
+      POSTGRES_USER: flashvsr
+      POSTGRES_PASSWORD: flashvsr
+    volumes:
+      - pgdata-dev:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flashvsr"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: flashvsr-redis-dev
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redisdata-dev:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata-dev:
+  redisdata-dev:
+

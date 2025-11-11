@@ -5,7 +5,7 @@
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { tasksApi } from '../api/tasks';
-import { TaskStatus } from '../types';
+import { MODEL_VARIANT_LABELS, TaskStatus } from '../types';
 import ProgressBar from '../components/ProgressBar';
 
 export default function TaskDetailPage() {
@@ -41,6 +41,9 @@ export default function TaskDetailPage() {
       </div>
     );
   }
+
+  const variantValue = (task.parameters.model_variant ?? 'tiny') as keyof typeof MODEL_VARIANT_LABELS;
+  const variantLabel = MODEL_VARIANT_LABELS[variantValue] ?? variantValue;
 
   const getStatusBadge = (status: TaskStatus) => {
     const badges = {
@@ -113,7 +116,11 @@ export default function TaskDetailPage() {
         {/* 处理参数 */}
         <div className="mb-8">
           <h3 className="text-lg font-semibold mb-4">处理参数</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div className="p-4 bg-gray-50 rounded-lg">
+              <div className="text-sm text-gray-600">模型变体</div>
+              <div className="text-xl font-semibold">{variantLabel}</div>
+            </div>
             <div className="p-4 bg-gray-50 rounded-lg">
               <div className="text-sm text-gray-600">超分倍数</div>
               <div className="text-xl font-semibold">{task.parameters.scale}x</div>

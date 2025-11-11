@@ -5,7 +5,7 @@
 import { Link } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { tasksApi } from '../api/tasks';
-import { TaskStatus } from '../types';
+import { MODEL_VARIANT_LABELS, TaskStatus } from '../types';
 import type { Task } from '../types';
 import ProgressBar from './ProgressBar';
 
@@ -55,6 +55,9 @@ export default function TaskCard({ task }: TaskCardProps) {
     if (seconds < 3600) return `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
     return `${Math.floor(seconds / 3600)}小时${Math.floor((seconds % 3600) / 60)}分`;
   };
+
+  const variantValue = (task.parameters.model_variant ?? 'tiny') as keyof typeof MODEL_VARIANT_LABELS;
+  const variantLabel = MODEL_VARIANT_LABELS[variantValue] ?? variantValue;
 
   return (
     <div className="card">
@@ -108,9 +111,10 @@ export default function TaskCard({ task }: TaskCardProps) {
       )}
 
       {/* 参数信息 */}
-      <div className="mb-4 text-sm text-gray-600">
-        <span className="mr-4">超分倍数: {task.parameters.scale}x</span>
-        <span className="mr-4">稀疏比率: {task.parameters.sparse_ratio}</span>
+      <div className="mb-4 text-sm text-gray-600 flex flex-wrap gap-x-4 gap-y-1">
+        <span>模型: {variantLabel}</span>
+        <span>超分倍数: {task.parameters.scale}x</span>
+        <span>稀疏比率: {task.parameters.sparse_ratio}</span>
         <span>局部范围: {task.parameters.local_range}</span>
       </div>
 

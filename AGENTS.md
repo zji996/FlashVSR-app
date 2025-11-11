@@ -5,12 +5,13 @@ FlashVSR keeps backend and frontend work in a single repo. `backend/app/api` hos
 
 ## Build, Test, and Development Commands
 - `uv --project backend sync` — install backend dependencies.
-- `uv --project backend run fastapi dev app/main.py` — start the API with auto-reload.
-- `uv --project backend run celery -A app.core.celery_app worker --loglevel=info --concurrency=1` — run the GPU worker.
-- `uv --project backend run alembic upgrade head` — apply DB migrations.
+- `source backend/.venv/bin/activate && cd backend && fastapi dev app/main.py` — start the API with auto-reload (推荐方式).
+- `cd backend && uv run fastapi dev app/main.py` — start the API with uv run (备选方式).
+- `source backend/.venv/bin/activate && cd backend && celery -A app.core.celery_app worker --loglevel=info --concurrency=1` — run the GPU worker.
+- `source backend/.venv/bin/activate && cd backend && alembic upgrade head` — apply DB migrations.
 - `cd frontend && pnpm install && pnpm dev` — install and boot the Vite dev server.
 - `cd frontend && pnpm lint` — lint/format the React codebase.
-- `uv --project backend run pytest` — execute backend tests.
+- `source backend/.venv/bin/activate && cd backend && pytest` — execute backend tests.
 - `docker compose up --build` — launch the full stack with Postgres and Redis.
 
 ## Frontend Notes

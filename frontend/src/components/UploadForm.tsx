@@ -4,20 +4,49 @@
 
 import { useState } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
 import { tasksApi } from '../api/tasks';
-import type { TaskParameters } from '../types';
+import { systemApi } from '../api/system';
+import { ModelVariant, type TaskParameters } from '../types';
 
 export default function UploadForm() {
   const queryClient = useQueryClient();
+  const { data: systemStatus } = useQuery({
+    queryKey: ['system-status'],
+    queryFn: systemApi.getStatus,
+    staleTime: 10000,
+  });
   const [file, setFile] = useState<File | null>(null);
   const [parameters, setParameters] = useState<TaskParameters>({
     scale: 4.0,
     sparse_ratio: 2.0,
     local_range: 11,
     seed: 0,
+    model_variant: ModelVariant.TINY,
   });
+
+  const variantOptions: Array<{ value: ModelVariant; label: string; description: string }> = [
+    {
+      value: ModelVariant.TINY,
+      label: 'Tiny（默认）',
+      description: '4× 推理，显存占用最低，适合绝大多数视频。',
+    },
+    {
+      value: ModelVariant.TINY_LONG,
+      label: 'Tiny Long',
+      description: '长序列/逐帧图片友好版本，针对 8n-3 帧裁切优化。',
+    },
+    {
+      value: ModelVariant.FULL,
+      label: 'Full（最高画质）',
+      description: '全尺寸模型，需要 Wan2.1 VAE 权重与更高显存。',
+    },
+  ];
+
+  const readyVariants = systemStatus?.flashvsr?.ready_variants ?? {};
+  const selectedVariant = variantOptions.find((option) => option.value === parameters.model_variant);
+  const selectedVariantReady = readyVariants?.[parameters.model_variant];
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: {
@@ -121,6 +150,42 @@ export default function UploadForm() {
 
       {/* 参数配置 */}
       <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="md:col-span-2">
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            模型变体
+          </label>
+          <select
+            value={parameters.model_variant}
+            onChange={(e) =>
+              setParameters({
+                ...parameters,
+                model_variant: e.target.value as ModelVariant,
+              })
+            }
+            className="input"
+          >
+            {variantOptions.map((option) => {
+              const ready = readyVariants?.[option.value] ?? true;
+              return (
+                <option key={option.value} value={option.value} disabled={!ready}>
+                  {option.label}
+                  {!ready ? '（权重未就绪）' : ''}
+                </option>
+              );
+            })}
+          </select>
+          <p className="text-xs text-gray-500 mt-1">
+            {selectedVariant?.description ?? '选择不同变体以平衡显存与画质需求。'}
+            {systemStatus?.flashvsr?.version
+              ? ` · FlashVSR ${systemStatus.flashvsr.version}`
+              : ''}
+          </p>
+          {selectedVariantReady === false && systemStatus?.flashvsr && (
+            <p className="text-xs text-red-600 mt-1">
+              缺少权重: {systemStatus.flashvsr.missing_files.join(', ') || '请参考 README 下载。'}
+            </p>
+          )}
+        </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
             超分倍数 (Scale)

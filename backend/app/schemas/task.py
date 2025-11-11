@@ -1,10 +1,12 @@
 """任务相关的Pydantic schemas."""
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field, ConfigDict
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.config import settings
 from app.models.task import TaskStatus
 
 
@@ -14,6 +16,10 @@ class TaskParameters(BaseModel):
     sparse_ratio: float = Field(default=2.0, ge=1.0, le=4.0, description="稀疏比率")
     local_range: int = Field(default=11, ge=7, le=15, description="局部范围")
     seed: int = Field(default=0, ge=0, description="随机种子")
+    model_variant: Literal["tiny", "tiny_long", "full"] = Field(
+        default=settings.DEFAULT_MODEL_VARIANT,
+        description="FlashVSR 模型变体",
+    )
 
 
 class VideoInfo(BaseModel):

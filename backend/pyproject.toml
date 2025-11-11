@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "FlashVSR Backend API"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.115.0",
+    "fastapi[standard]>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "sqlalchemy>=2.0.0",
     "alembic>=1.13.0",
@@ -25,6 +25,9 @@ dependencies = [
     "einops>=0.8.1",
     "numpy>=1.26.4",
     "tqdm>=4.66.0",
+    "huggingface-hub>=0.24.0,<1.0",
+    "modelscope>=1.31.0",
+    "transformers>=4.57.1",
 ]
 
 [build-system]

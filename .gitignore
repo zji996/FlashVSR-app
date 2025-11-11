@@ -9,6 +9,12 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
 
 # Node / frontend
 node_modules/
@@ -42,6 +48,10 @@ venv/
 # Docker / containers
 *.pid
 *.pid.lock
+
+# Storage and Models (now in backend/)
+backend/storage/
+backend/models/
 
 # OS / misc
 .Trash-*
