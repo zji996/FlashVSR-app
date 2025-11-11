@@ -5,7 +5,8 @@
 import { Link } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { tasksApi } from '../api/tasks';
-import { Task, TaskStatus } from '../types';
+import { TaskStatus } from '../types';
+import type { Task } from '../types';
 import ProgressBar from './ProgressBar';
 
 interface TaskCardProps {

@@ -3,6 +3,30 @@ import { useQuery } from '@tanstack/react-query';
 import { systemApi } from './api/system';
 import HomePage from './pages/HomePage';
 import TaskDetailPage from './pages/TaskDetailPage';
+import type { SystemStatus } from './types';
+
+const numericTaskKeys: Array<keyof SystemStatus['tasks']> = [
+  'total',
+  'pending',
+  'processing',
+  'completed',
+  'failed',
+];
+
+const isSystemStatus = (value: unknown): value is SystemStatus => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as SystemStatus;
+  if (typeof candidate.gpu_available !== 'boolean') {
+    return false;
+  }
+  const tasks = candidate.tasks;
+  if (!tasks || typeof tasks !== 'object') {
+    return false;
+  }
+  return numericTaskKeys.every((key) => typeof tasks[key] === 'number');
+};
 
 function App() {
   const { data: systemStatus } = useQuery({
@@ -10,6 +34,8 @@ function App() {
     queryFn: systemApi.getStatus,
     refetchInterval: 10000, // 每10秒刷新一次
   });
+
+  const systemStatusForDisplay = isSystemStatus(systemStatus) ? systemStatus : undefined;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -27,23 +53,23 @@ function App() {
             </div>
 
             {/* 系统状态 */}
-            {systemStatus && (
+            {systemStatusForDisplay && (
               <div className="flex items-center gap-6 text-sm">
                 <div className="flex items-center gap-2">
                   <div
                     className={`w-2 h-2 rounded-full ${
-                      systemStatus.gpu_available ? 'bg-green-500' : 'bg-red-500'
+                      systemStatusForDisplay.gpu_available ? 'bg-green-500' : 'bg-red-500'
                     }`}
                   />
                   <span className="text-gray-700">
-                    {systemStatus.gpu_available
-                      ? `GPU: ${systemStatus.gpu_info?.name || 'Available'}`
+                    {systemStatusForDisplay.gpu_available
+                      ? `GPU: ${systemStatusForDisplay.gpu_info?.name || 'Available'}`
                       : 'GPU: 不可用'}
                   </span>
                 </div>
                 <div className="text-gray-700">
-                  任务: {systemStatus.tasks.processing} 处理中 /{' '}
-                  {systemStatus.tasks.pending} 等待中
+                  任务: {systemStatusForDisplay.tasks.processing} 处理中 /{' '}
+                  {systemStatusForDisplay.tasks.pending} 等待中
                 </div>
               </div>
             )}

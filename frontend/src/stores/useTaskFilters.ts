@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { TaskStatus } from '../types';
+import type { TaskStatus } from '../types';
 
 interface TaskFilterState {
   page: number;

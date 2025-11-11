@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   backend:
     build:
@@ -63,8 +61,6 @@ services:
       - ./third_party/FlashVSR:/app/third_party/FlashVSR:ro
     depends_on:
       - backend
-      - postgres
-      - redis
       - postgres
       - redis
     deploy:

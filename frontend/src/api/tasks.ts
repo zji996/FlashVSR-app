@@ -33,7 +33,7 @@ export const tasksApi = {
     pageSize: number = 20,
     status?: string
   ): Promise<TaskListResponse> {
-    const params: Record<string, any> = { page, page_size: pageSize };
+    const params: Record<string, number | string> = { page, page_size: pageSize };
     if (status) {
       params.status = status;
     }

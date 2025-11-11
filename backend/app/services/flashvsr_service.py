@@ -16,8 +16,8 @@ from einops import rearrange
 from app.config import settings
 
 # 添加FlashVSR到Python路径
-THIRD_PARTY_ROOT = Path("/app/third_party")
-FLASHVSR_PATH = THIRD_PARTY_ROOT / "FlashVSR"
+THIRD_PARTY_ROOT = settings.THIRD_PARTY_ROOT
+FLASHVSR_PATH = settings.THIRD_PARTY_FLASHVSR_PATH
 if str(FLASHVSR_PATH) not in sys.path:
     sys.path.insert(0, str(FLASHVSR_PATH))
 

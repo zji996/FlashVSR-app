@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { isAxiosError } from 'axios';
 import { tasksApi } from '../api/tasks';
 import type { TaskParameters } from '../types';
 
@@ -38,8 +39,25 @@ export default function UploadForm() {
       setFile(null);
       alert('任务创建成功！');
     },
-    onError: (error: any) => {
-      alert(`上传失败: ${error.response?.data?.detail || error.message}`);
+    onError: (error: unknown) => {
+      const message = (() => {
+        if (isAxiosError<{ detail?: string | string[] }>(error)) {
+          const detail = error.response?.data?.detail;
+          if (typeof detail === 'string') {
+            return detail;
+          }
+          if (Array.isArray(detail)) {
+            return detail.join(', ');
+          }
+          return error.message;
+        }
+        if (error instanceof Error) {
+          return error.message;
+        }
+        return '未知错误';
+      })();
+
+      alert(`上传失败: ${message}`);
     },
   });
 
@@ -195,4 +213,3 @@ export default function UploadForm() {
     </form>
   );
 }
-

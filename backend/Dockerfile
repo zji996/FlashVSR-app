@@ -1,5 +1,5 @@
 # Backend Dockerfile with GPU support
-FROM nvidia/cuda:12.4.0-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu22.04
 
 # 设置工作目录
 WORKDIR /app

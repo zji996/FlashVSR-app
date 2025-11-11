@@ -23,15 +23,18 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://redis:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"
 
-    # 文件存储配置
-    STORAGE_ROOT: Path = Path("/app/storage")
+    # 项目与路径配置
+    PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent
+    STORAGE_ROOT: Path = PROJECT_ROOT / "storage"
     UPLOAD_DIR: Path = STORAGE_ROOT / "uploads"
     RESULT_DIR: Path = STORAGE_ROOT / "results"
     MAX_UPLOAD_SIZE: int = 2 * 1024 * 1024 * 1024  # 2GB
 
     # 模型配置
-    MODEL_ROOT: Path = Path("/app/models")
+    MODEL_ROOT: Path = PROJECT_ROOT / "models"
     FLASHVSR_MODEL_PATH: Path = MODEL_ROOT / "FlashVSR"
+    THIRD_PARTY_ROOT: Path = PROJECT_ROOT / "third_party"
+    THIRD_PARTY_FLASHVSR_PATH: Path = THIRD_PARTY_ROOT / "FlashVSR"
 
     # 任务配置
     MAX_CONCURRENT_TASKS: int = 1  # GPU限制
