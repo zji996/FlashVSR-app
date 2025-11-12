@@ -7,6 +7,8 @@ FlashVSR 应用围绕 Frontend、Backend 与 GPU 作业流三大层构建，同�
 - **Frontend（`frontend/`）**：Vite + React + TypeScript 负责 UI、上传、参数配置与任务状态展示；React Query 作为数据抓取层，Zustand 管理客户端筛选/分页状态；`api/` 目录封装对 `/api/*` 的调用，TailwindCSS 提供视觉体系。
 - **Backend（`backend/`）**：FastAPI 提供 `/api/system/*` 和 `/api/tasks/*` 路由；SQLAlchemy/PostgreSQL 持久化任务与进度，Pydantic schemas（`app/schemas`）约束前端交互；配置集中在 `app/config`，数据库依赖于 `app/core/database.py`。
 - **GPU 作业流（`services/` + `tasks/`）**：上传后由 `tasks.flashvsr_task.process_video_task` 调用 FlashVSR 推理；`services.flashvsr_service` 封装模型加载、GPU 显存管理与进度回调，Celery/Redis 负责调度与队列，`storage/` 持久化上传文件与结果。
+- **LQ 流式缓冲**：`FlashVSRService` 基于 `FLASHVSR_STREAMING_LQ_MAX_BYTES`（配合 `FLASHVSR_STREAMING_PREFETCH_FRAMES`）构建纯内存 `StreamingVideoTensor`：后台线程在达到预读帧数后即可启动推理，`BasePipeline._release_lq_frames` 会在每个 8 帧窗口结束后调用 `release_until` 释放旧帧，使缓冲始终受控。阈值为 0 时表示不设上限，所有素材都阻塞等待，而设置为 `8GB`/`32GB` 等值可只在超出该大小时启用流式缓冲。
+- **默认模型**：`settings.DEFAULT_MODEL_VARIANT` 以及前端 `UploadForm` 默认使用 Tiny Long 版本，以便开箱就能覆盖长序列；仍可在 UI 中切换 Tiny 或 Full，或通过 `MODEL_VARIANTS_TO_PRELOAD` 预热额外 pipeline。
 
 ## 支撑设施
 

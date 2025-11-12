@@ -35,6 +35,8 @@ async def create_task(
     local_range: int = Form(default=11),
     seed: int = Form(default=0),
     model_variant: str = Form(default=settings.DEFAULT_MODEL_VARIANT),
+    preprocess_strategy: str = Form(default="none"),
+    preprocess_width: Optional[int] = Form(default=None),
     db: Session = Depends(get_db),
 ):
     """
@@ -46,13 +48,27 @@ async def create_task(
     - **local_range**: 局部范围 (7-15)
     - **seed**: 随机种子
     - **model_variant**: FlashVSR 模型变体（tiny / tiny_long / full）
+    - **preprocess_strategy**: 预处理策略（none/always）
+    - **preprocess_width**: 预处理目标宽度（128 的倍数）
     """
     # 验证文件类型
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名不能为空")
     
     file_ext = Path(file.filename).suffix.lower()
-    allowed_extensions = ['.mp4', '.mov', '.avi', '.mkv']
+    allowed_extensions = [
+        '.mp4',
+        '.mov',
+        '.avi',
+        '.mkv',
+        '.ts',
+        '.m2ts',
+        '.mts',
+        '.m4s',
+        '.mpg',
+        '.mpeg',
+        '.webm',
+    ]
     if file_ext not in allowed_extensions:
         raise HTTPException(
             status_code=400,
@@ -107,6 +123,8 @@ async def create_task(
             local_range=local_range,
             seed=seed,
             model_variant=model_variant,
+            preprocess_strategy=preprocess_strategy,
+            preprocess_width=preprocess_width,
         )
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.errors()) from exc

@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import inspect
+import os
 import sys
 import time
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
+from collections import deque
+from itertools import islice
+from threading import Condition, Lock, Thread
+from queue import Queue
+from uuid import uuid4
 from typing import Any, Callable, Optional
+
+# 避免 PyTorch 预留的大块显存无法复用，默认启用可扩展分段分配。
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import imageio
 import numpy as np
@@ -42,6 +53,318 @@ if str(WANVSR_PATH) not in sys.path:
 
 from utils.TCDecoder import build_tcdecoder  # type: ignore  # noqa: E402
 from utils.utils import Causal_LQ4x_Proj  # type: ignore  # noqa: E402
+
+
+class StreamingVideoTensor:
+    """In-memory bounded buffer that decodes frames asynchronously."""
+
+    def __init__(
+        self,
+        reader,
+        indices: list[int],
+        load_frame_fn: Callable[[int], torch.Tensor],
+        height: int,
+        width: int,
+        dtype: torch.dtype,
+        max_buffer_frames: int,
+        prefetch_frames: int,
+    ):
+        self.height = height
+        self.width = width
+        self.dtype = dtype
+        self.total_frames = len(indices)
+        self._reader = reader
+        self._indices = indices
+        self._load_frame_fn = load_frame_fn
+        self._max_buffer_frames = max_buffer_frames
+        self._prefetch_frames = min(prefetch_frames, self.total_frames)
+        self._buffer: deque[torch.Tensor] = deque()
+        self._lock = Condition()
+        self._start_index = 0
+        self._produced = 0
+        self._stop = False
+        self._finished = False
+        self._error: Optional[BaseException] = None
+        self._thread = Thread(target=self._loader_loop, name="flashvsr-lq-stream", daemon=True)
+        self._thread.start()
+
+        if self._prefetch_frames:
+            self._wait_for_frames(self._prefetch_frames)
+
+    def _loader_loop(self) -> None:
+        try:
+            for frame_idx in self._indices:
+                if self._stop:
+                    break
+                frame_tensor = self._load_frame_fn(frame_idx)
+                with self._lock:
+                    while not self._stop and len(self._buffer) >= self._max_buffer_frames:
+                        self._lock.wait()
+                    if self._stop:
+                        break
+                    self._buffer.append(frame_tensor)
+                    self._produced += 1
+                    self._lock.notify_all()
+        except BaseException as exc:
+            with self._lock:
+                self._error = exc
+                self._lock.notify_all()
+        finally:
+            try:
+                self._reader.close()
+            except Exception:
+                pass
+            with self._lock:
+                self._finished = True
+                self._lock.notify_all()
+
+    def _wait_for_frames(self, count: int) -> None:
+        with self._lock:
+            while self._produced < count and not self._error and not self._finished:
+                self._lock.wait()
+            self._raise_if_failed_locked()
+
+    def _raise_if_failed_locked(self) -> None:
+        if self._error:
+            raise RuntimeError("LQ streaming loader failed") from self._error
+
+    def get_clip(
+        self,
+        start: int,
+        end: int,
+        *,
+        device: str,
+        dtype: torch.dtype,
+        non_blocking: bool = True,
+    ) -> torch.Tensor:
+        start = max(start, 0)
+        end = min(end, self.total_frames)
+        if end <= start:
+            return torch.empty((1, 3, 0, self.height, self.width), device=device, dtype=dtype)
+
+        with self._lock:
+            while self._produced < end and not self._error:
+                if self._finished and self._produced >= end:
+                    break
+                self._lock.wait()
+            self._raise_if_failed_locked()
+            if end > self._produced:
+                raise RuntimeError(
+                    f"Requested frames [{start}, {end}) but only {self._produced} decoded so far"
+                )
+            if start < self._start_index:
+                raise RuntimeError(
+                    f"LQ frames [{start}, {end}) 已被释放，当前缓冲起点为 {self._start_index}"
+                )
+            relative_start = start - self._start_index
+            relative_end = end - self._start_index
+            frames = list(islice(self._buffer, relative_start, relative_end))
+
+        if not frames:
+            return torch.empty((1, 3, 0, self.height, self.width), device=device, dtype=dtype)
+
+        clip = torch.stack(frames, dim=0).permute(1, 0, 2, 3).unsqueeze(0)
+        return clip.to(device=device, dtype=dtype, non_blocking=non_blocking)
+
+    def release_until(self, frame_idx: int) -> None:
+        with self._lock:
+            target = min(frame_idx, self._produced)
+            if target <= self._start_index:
+                return
+            to_drop = min(target - self._start_index, len(self._buffer))
+            for _ in range(to_drop):
+                self._buffer.popleft()
+                self._start_index += 1
+            self._lock.notify_all()
+
+    def cleanup(self) -> None:
+        with self._lock:
+            self._stop = True
+            self._lock.notify_all()
+        if self._thread.is_alive():
+            self._thread.join(timeout=5)
+        with self._lock:
+            self._buffer.clear()
+            self._finished = True
+            self._lock.notify_all()
+        try:
+            self._reader.close()
+        except Exception:
+            pass
+
+    def __del__(self):
+        try:
+            self.cleanup()
+        except Exception:
+            pass
+
+
+class ChunkedVideoWriter:
+    """Background process that writes frame batches into chunk MP4 files."""
+
+    def __init__(self, fps: int, quality: int, chunk_dir: Path, base_name: str) -> None:
+        self.fps = fps
+        self.quality = quality
+        self.chunk_dir = chunk_dir
+        self.base_name = base_name
+        self._queue: Queue[dict[str, Any]] = Queue(maxsize=2)
+        self._thread: Optional[Thread] = None
+        self._started = False
+        self._closed = False
+        self._error: Optional[str] = None
+
+    def _run(self) -> None:
+        try:
+            import imageio  # Local import inside worker
+            while True:
+                message = self._queue.get()
+                if message["type"] == "stop":
+                    break
+                path = Path(message["path"])
+                frames = message["frames"]
+                path.parent.mkdir(parents=True, exist_ok=True)
+                writer = imageio.get_writer(str(path), fps=self.fps, quality=self.quality)
+                try:
+                    for frame in frames:
+                        writer.append_data(frame)
+                finally:
+                    writer.close()
+        except Exception as exc:  # pragma: no cover - best effort logging
+            self._error = str(exc)
+
+    def _start_worker(self) -> None:
+        if self._started:
+            return
+        self.chunk_dir.mkdir(parents=True, exist_ok=True)
+        self._thread = Thread(target=self._run, name="chunk-writer", daemon=True)
+        self._thread.start()
+        self._started = True
+
+    def submit(self, index: int, frames: list[np.ndarray]) -> Path:
+        """Submit a chunk and return the chunk path."""
+        if self._error:
+            raise RuntimeError(f"分片写入线程失败: {self._error}")
+        self._start_worker()
+        chunk_path = self.chunk_dir / f"{self.base_name}_chunk_{index:05d}.mp4"
+        self._queue.put(
+            {
+                "type": "chunk",
+                "path": str(chunk_path),
+                "frames": frames,
+            }
+        )
+        if self._error:
+            raise RuntimeError(f"分片写入线程失败: {self._error}")
+        return chunk_path
+
+    def finish(self) -> None:
+        """Wait for the worker process to flush all pending chunks."""
+        if not self._started or self._closed:
+            self._closed = True
+            return
+        self._queue.put({"type": "stop"})
+        if self._thread is not None:
+            self._thread.join()
+        self._closed = True
+        if self._error:
+            raise RuntimeError(f"分片写入线程失败: {self._error}")
+
+    def abort(self) -> None:
+        """Terminate the worker process if it's still alive."""
+        if self._closed:
+            return
+        if self._started and self._thread is not None and self._thread.is_alive():
+            self._queue.put({"type": "stop"})
+            self._thread.join(timeout=1)
+        self._closed = True
+
+
+class ChunkedExportSession:
+    """Manage chunked frame export and final merge."""
+
+    def __init__(
+        self,
+        service: "FlashVSRService",
+        output_path: str,
+        fps: int,
+        total_frames: int,
+        start_time: Optional[float],
+        progress_callback: Optional[Callable[[int, int, float], None]],
+    ) -> None:
+        self._service = service
+        self.output_path = output_path
+        self.total_frames = total_frames
+        self.progress_callback = progress_callback
+        self.start_time = start_time or time.time()
+        self.processed = 0
+        self.chunk_paths: list[Path] = []
+        self.chunk_dir = settings.FLASHVSR_CHUNKED_SAVE_TMP_DIR / f"chunks_{uuid4().hex}"
+        self.chunk_size = settings.FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE
+        self._buffer: list[np.ndarray] = []
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        self.writer = ChunkedVideoWriter(
+            fps=fps,
+            quality=6,
+            chunk_dir=self.chunk_dir,
+            base_name=Path(output_path).stem,
+        )
+        self._closed = False
+
+    def handle_chunk(self, tensor_chunk: torch.Tensor) -> None:
+        if tensor_chunk is None or tensor_chunk.shape[2] == 0:
+            return
+        chunk_cpu = tensor_chunk.detach().to("cpu")
+        first_batch = chunk_cpu[0]
+        frames = self._service._tensor2video(first_batch)
+        frame_arrays = [np.array(frame) for frame in frames]
+        self._buffer.extend(frame_arrays)
+        self._drain_buffer()
+        self.processed += len(frame_arrays)
+        if self.progress_callback:
+            elapsed = max(time.time() - self.start_time, 0.0)
+            avg_time = elapsed / self.processed if self.processed else 0.0
+            self.progress_callback(self.processed, self.total_frames, avg_time)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._flush_buffer()
+        self.writer.finish()
+        self._service._merge_video_chunks(self.chunk_paths, self.output_path)
+        if self.progress_callback:
+            elapsed = max(time.time() - self.start_time, 0.0)
+            avg_time = elapsed / self.total_frames if self.total_frames else 0.0
+            self.progress_callback(self.total_frames, self.total_frames, avg_time)
+        self.chunk_paths.clear()
+        self._closed = True
+
+    def abort(self) -> None:
+        if self._closed:
+            return
+        self.writer.abort()
+        self._service._cleanup_chunk_artifacts(self.chunk_paths)
+        self._closed = True
+        self._buffer.clear()
+
+    def _drain_buffer(self) -> None:
+        if self.chunk_size <= 0:
+            self._flush_buffer()
+            return
+        while len(self._buffer) >= self.chunk_size:
+            self._flush_buffer(self.chunk_size)
+
+    def _flush_buffer(self, count: Optional[int] = None) -> None:
+        if not self._buffer:
+            return
+        if count is None or count > len(self._buffer):
+            count = len(self._buffer)
+        if count <= 0:
+            return
+        frames_to_write = self._buffer[:count]
+        del self._buffer[:count]
+        self.chunk_paths.append(
+            self.writer.submit(len(self.chunk_paths), frames_to_write)
+        )
 
 
 @dataclass
@@ -167,22 +490,44 @@ class FlashVSRService:
         }
         pipeline_kwargs.update(handle.default_kwargs)
 
-        with torch.inference_mode():
-            output_video = pipeline(**pipeline_kwargs)
+        chunk_session: Optional[ChunkedExportSession] = None
+        supports_chunk_stream = "frame_chunk_handler" in inspect.signature(pipeline.__call__).parameters
+        if self._should_use_chunk_writer(total_frames) and supports_chunk_stream:
+            chunk_session = ChunkedExportSession(
+                service=self,
+                output_path=output_path,
+                fps=fps,
+                total_frames=total_frames,
+                start_time=start_time,
+                progress_callback=progress_callback,
+            )
+            pipeline_kwargs["frame_chunk_handler"] = chunk_session.handle_chunk
+
+        cleanup_handle = video_tensor if hasattr(video_tensor, "cleanup") else None
+        try:
+            with torch.inference_mode():
+                output_video = pipeline(**pipeline_kwargs)
+        except Exception:
+            if chunk_session:
+                chunk_session.abort()
+            raise
+        finally:
+            if cleanup_handle is not None:
+                cleanup_handle.cleanup()
         inference_time = time.time() - infer_start
 
-        # 转换为视频帧
-        frames = self._tensor2video(output_video)
-
-        # 保存视频
-        self._save_video(
-            frames,
-            output_path,
-            fps=fps,
-            progress_callback=progress_callback,
-            total_frames=total_frames,
-            start_time=start_time,
-        )
+        if chunk_session:
+            chunk_session.close()
+            processed_frame_count = total_frames
+        else:
+            processed_frame_count = self._export_video(
+                output_video=output_video,
+                output_path=output_path,
+                fps=fps,
+                total_frames=total_frames,
+                start_time=start_time,
+                progress_callback=progress_callback,
+            )
 
         total_time = time.time() - start_time
 
@@ -197,7 +542,7 @@ class FlashVSRService:
             "height": height,
             "total_frames": total_frames,
             "fps": fps,
-            "processed_frames": len(frames),
+            "processed_frames": processed_frame_count,
             "inference_time": inference_time,
             "processing_time": total_time,
             "model_variant": variant,
@@ -233,21 +578,50 @@ class FlashVSRService:
 
         # 读取所有帧
         frames = []
+        # 当推理在 GPU 上运行时，不要在这里把所有帧一次性搬到显存。
+        # 先推进 CPU，后续按块 `.to(self.device)`，可以把 ~4GB 的 3K@105 帧常驻显存消除掉。
+        target_frame_device = "cpu" if device == "cuda" else device
         indices = list(range(total_frames)) + [total_frames - 1] * 4
         F = self._largest_8n1_leq(len(indices))
         indices = indices[:F]
 
         print(f"处理帧数: {F}")
 
-        try:
-            for i in tqdm(indices, desc="加载视频帧"):
-                img = Image.fromarray(reader.get_data(i)).convert('RGB')
-                img_out = self._upscale_and_crop(img, scale, tW, tH)
-                frames.append(self._pil_to_tensor(img_out, dtype, device))
-        finally:
-            reader.close()
+        use_streaming = self._should_stream_video(F, tH, tW, dtype)
 
-        video_tensor = torch.stack(frames, 0).permute(1, 0, 2, 3).unsqueeze(0)
+        reader_owned = True
+        try:
+            if use_streaming:
+                video_tensor = self._build_streaming_video_tensor(
+                    reader,
+                    indices,
+                    scale,
+                    tW,
+                    tH,
+                    dtype,
+                    target_frame_device,
+                )
+                reader_owned = False
+            else:
+                for i in tqdm(indices, desc="加载视频帧"):
+                    frames.append(
+                        self._load_frame_tensor(
+                            reader,
+                            i,
+                            scale,
+                            tW,
+                            tH,
+                            dtype,
+                            target_frame_device,
+                        )
+                    )
+                video_tensor = torch.stack(frames, 0).permute(1, 0, 2, 3).unsqueeze(0)
+                if device == "cuda":
+                    video_tensor = video_tensor.pin_memory()
+        finally:
+            if reader_owned:
+                reader.close()
+
         return video_tensor, tH, tW, F, fps
 
     @staticmethod
@@ -343,10 +717,174 @@ class FlashVSRService:
             avg_time = elapsed / target_total if target_total else 0.0
             progress_callback(target_total, target_total, avg_time)
 
+    def _export_video(
+        self,
+        output_video,
+        output_path: str,
+        fps: int,
+        total_frames: int,
+        start_time: Optional[float],
+        progress_callback: Optional[Callable[[int, int, float], None]],
+    ) -> int:
+        """Convert the in-memory tensor into a video file."""
+        try:
+            frames = self._tensor2video(output_video)
+            self._save_video(
+                frames,
+                output_path,
+                fps=fps,
+                progress_callback=progress_callback,
+                total_frames=total_frames,
+                start_time=start_time,
+            )
+            return len(frames)
+        finally:
+            del output_video
+
+    @staticmethod
+    def _should_use_chunk_writer(total_frames: int) -> bool:
+        min_frames = settings.FLASHVSR_CHUNKED_SAVE_MIN_FRAMES
+        return min_frames > 0 and total_frames >= min_frames
+
+    def _merge_video_chunks(self, chunk_paths: list[Path], output_path: str) -> None:
+        if not chunk_paths:
+            raise RuntimeError("未生成可用于合并的分片")
+        chunk_paths.sort(key=lambda path: path.name)
+        chunk_dir = chunk_paths[0].parent
+        if len(chunk_paths) == 1:
+            shutil.move(str(chunk_paths[0]), output_path)
+            try:
+                chunk_dir.rmdir()
+            except OSError:
+                pass
+            return
+
+        list_file = chunk_dir / f"{Path(output_path).stem}_chunks.txt"
+        with open(list_file, "w", encoding="utf-8") as handle:
+            for path in chunk_paths:
+                handle.write(f"file '{path}'\n")
+
+        cmd = [
+            settings.FFMPEG_BINARY,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(list_file),
+            "-c",
+            "copy",
+            output_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"FFmpeg 合并分片失败（{result.returncode}）: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+
+        list_file.unlink(missing_ok=True)
+        for path in chunk_paths:
+            path.unlink(missing_ok=True)
+        try:
+            chunk_dir.rmdir()
+        except OSError:
+            pass
+
+    @staticmethod
+    def _cleanup_chunk_artifacts(paths: list[Path]) -> None:
+        """尽力删除异常情况下遗留的分片文件."""
+        for path in paths:
+            path.unlink(missing_ok=True)
+        if paths:
+            try:
+                paths[0].parent.rmdir()
+            except OSError:
+                pass
     @staticmethod
     def _largest_8n1_leq(n: int) -> int:
         """返回最大的 8n+1 <= n."""
         return 0 if n < 1 else ((n - 1) // 8) * 8 + 1
+
+    @staticmethod
+    def _estimate_video_bytes(total_frames: int, height: int, width: int, dtype: torch.dtype) -> int:
+        element_bytes = torch.finfo(dtype).bits // 8
+        return total_frames * height * width * 3 * element_bytes
+
+    def _should_stream_video(self, total_frames: int, height: int, width: int, dtype: torch.dtype) -> bool:
+        # Streaming is always enabled as long as prefetch > 0. Use the env limit only to cap buffer size.
+        return settings.FLASHVSR_STREAMING_PREFETCH_FRAMES > 0
+
+    def _load_frame_tensor(
+        self,
+        reader,
+        frame_idx: int,
+        scale: float,
+        target_width: int,
+        target_height: int,
+        dtype: torch.dtype,
+        device: str,
+    ) -> torch.Tensor:
+        img = Image.fromarray(reader.get_data(frame_idx)).convert('RGB')
+        img_out = self._upscale_and_crop(img, scale, target_width, target_height)
+        return self._pil_to_tensor(img_out, dtype, device)
+
+    def _build_streaming_video_tensor(
+        self,
+        reader,
+        indices: list[int],
+        scale: float,
+        target_width: int,
+        target_height: int,
+        dtype: torch.dtype,
+        target_device: str,
+    ) -> StreamingVideoTensor:
+        total_needed = len(indices)
+        if total_needed == 0:
+            raise RuntimeError("视频没有可处理的帧")
+        limit_bytes = settings.FLASHVSR_STREAMING_LQ_MAX_BYTES
+        per_frame_bytes = self._estimate_video_bytes(1, target_height, target_width, dtype)
+        if per_frame_bytes <= 0:
+            raise RuntimeError("无法计算单帧缓冲大小")
+        if limit_bytes <= 0:
+            frames_from_limit = total_needed
+        else:
+            frames_from_limit = limit_bytes // per_frame_bytes
+            if frames_from_limit <= 0:
+                raise RuntimeError(
+                    "FLASHVSR_STREAMING_LQ_MAX_BYTES 太小，连单帧 LQ 缓冲都容纳不了"
+                )
+        prefetch = max(1, min(settings.FLASHVSR_STREAMING_PREFETCH_FRAMES, total_needed))
+        if frames_from_limit < prefetch:
+            required_bytes = prefetch * per_frame_bytes
+            raise RuntimeError(
+                "FLASHVSR_STREAMING_LQ_MAX_BYTES 太小，无法预读启动推理所需的帧数；"
+                f"至少需要 {required_bytes / (1024**3):.2f} GB 才能缓存 {prefetch} 帧"
+            )
+        capacity_frames = min(frames_from_limit, total_needed)
+
+        def _load(idx: int) -> torch.Tensor:
+            return self._load_frame_tensor(
+                reader,
+                idx,
+                scale,
+                target_width,
+                target_height,
+                dtype,
+                target_device,
+            )
+
+        return StreamingVideoTensor(
+            reader=reader,
+            indices=list(indices),
+            load_frame_fn=_load,
+            height=target_height,
+            width=target_width,
+            dtype=dtype,
+            max_buffer_frames=capacity_frames,
+            prefetch_frames=prefetch,
+        )
 
     def preload_variant(self, variant: Optional[str] = None) -> PipelineHandle:
         """显式预加载指定变体."""
@@ -408,6 +946,11 @@ class FlashVSRService:
 
         pipe = pipeline_cls.from_model_manager(mm, device=device)
 
+        cache_device, cache_reason = self._decide_cache_offload_device(device)
+        pipe.set_cache_offload_device(cache_device)
+        if cache_device:
+            print(f"💾 KV cache offload → {cache_device} ({cache_reason})")
+
         # 配置 LQ 投影层
         lq_proj = Causal_LQ4x_Proj(in_dim=3, out_dim=1536, layer_num=1).to(
             device, dtype=torch.bfloat16
@@ -460,3 +1003,29 @@ class FlashVSRService:
                 f"模型变体 {value} 缺少必要权重，请参考 README 下载 FlashVSR {settings.FLASHVSR_VERSION} 权重"
             )
         return value
+
+    def _decide_cache_offload_device(self, device: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        Determine whether to spill streaming KV caches to CPU, returning (device, reason).
+        """
+        mode = (settings.FLASHVSR_CACHE_OFFLOAD or "auto").strip().lower()
+        allowed = {"auto", "cpu", "none", "off", "disable"}
+        if mode not in allowed:
+            raise ValueError(
+                f"无效的 FLASHVSR_CACHE_OFFLOAD 配置: {settings.FLASHVSR_CACHE_OFFLOAD}. "
+                f"可选值: {', '.join(sorted(allowed))}"
+            )
+        if device != "cuda":
+            return None, None
+
+        total_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        threshold = settings.FLASHVSR_CACHE_OFFLOAD_AUTO_THRESHOLD_GB
+
+        if mode == "cpu":
+            return "cpu", "forced via FLASHVSR_CACHE_OFFLOAD=cpu"
+        if mode == "auto" and total_gb <= threshold:
+            return (
+                "cpu",
+                f"auto: GPU {total_gb:.1f} GB ≤ {threshold:.1f} GB",
+            )
+        return None, None

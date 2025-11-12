@@ -1,7 +1,12 @@
 """应用配置管理."""
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
+import re
+from typing import Any, ClassVar
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_core import PydanticUndefined
 
 
 class Settings(BaseSettings):
@@ -47,6 +52,18 @@ class Settings(BaseSettings):
     FLASHVSR_PROMPT_TENSOR_PATH: Path = (
         THIRD_PARTY_FLASHVSR_PATH / "examples" / "WanVSR" / "prompt_tensor" / "posi_prompt.pth"
     )
+    FLASHVSR_CACHE_OFFLOAD: str = "auto"  # auto | cpu | none
+    FLASHVSR_CACHE_OFFLOAD_AUTO_THRESHOLD_GB: float = 24.0
+    FLASHVSR_STREAMING_LQ_MAX_BYTES: int = 0
+    FLASHVSR_STREAMING_PREFETCH_FRAMES: int = 25
+    FLASHVSR_CHUNKED_SAVE_MIN_FRAMES: int = 600
+    FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE: int = 120
+    FLASHVSR_CHUNKED_SAVE_TMP_DIR: Path = STORAGE_ROOT / "tmp"
+    FFMPEG_BINARY: str = "ffmpeg"
+    FFPROBE_BINARY: str = "ffprobe"
+    PREPROCESS_TMP_DIR: Path = STORAGE_ROOT / "tmp"
+    PREPROCESS_FFMPEG_PRESET: str = "veryfast"
+    PREPROCESS_FFMPEG_CRF: int = 23
 
     # 任务配置
     MAX_CONCURRENT_TASKS: int = 1  # GPU限制
@@ -55,7 +72,7 @@ class Settings(BaseSettings):
     DEFAULT_SPARSE_RATIO: float = 2.0
     DEFAULT_LOCAL_RANGE: int = 11
     DEFAULT_SEED: int = 0
-    DEFAULT_MODEL_VARIANT: str = "tiny"
+    DEFAULT_MODEL_VARIANT: str = "tiny_long"
     MODEL_VARIANTS_TO_PRELOAD: list[str] = []
 
     # CORS配置
@@ -67,6 +84,69 @@ class Settings(BaseSettings):
         case_sensitive=True,
         extra="ignore",
     )
+
+    _SIZE_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
+        r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([kmgt]?i?b|[kmgt]?b|[kmgt]?|bytes)?\s*$",
+        re.IGNORECASE,
+    )
+
+    UNIT_MAP: ClassVar[dict[str, int]] = {
+        "b": 1,
+        "byte": 1,
+        "bytes": 1,
+        "k": 1024,
+        "kb": 1024,
+        "kib": 1024,
+        "m": 1024**2,
+        "mb": 1024**2,
+        "mib": 1024**2,
+        "g": 1024**3,
+        "gb": 1024**3,
+        "gib": 1024**3,
+        "t": 1024**4,
+        "tb": 1024**4,
+        "tib": 1024**4,
+    }
+
+    @field_validator("FLASHVSR_STREAMING_LQ_MAX_BYTES", mode="before")
+    @classmethod
+    def _parse_stream_limit(cls, value: Any) -> int:
+        return cls._parse_size_to_bytes(value, default=0)
+
+    @field_validator("FLASHVSR_STREAMING_PREFETCH_FRAMES")
+    @classmethod
+    def _validate_stream_prefetch(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("FLASHVSR_STREAMING_PREFETCH_FRAMES must be > 0")
+        return value
+
+    @classmethod
+    def _parse_size_to_bytes(cls, value: Any, *, default: int | None = None) -> int:
+        default_value = 0 if default is None else default
+        if value is PydanticUndefined or value is None:
+            return default_value
+        if isinstance(value, (int, float)):
+            return int(value)
+        if not isinstance(value, str):
+            raise ValueError("Size must be int, float, or string like '3GB'")
+
+        normalized = value.replace("_", "").strip()
+        if not normalized:
+            return default_value
+        if normalized == "0":
+            return 0
+
+        match = cls._SIZE_PATTERN.match(normalized)
+        if not match:
+            raise ValueError(
+                f"无法解析大小 '{value}'，请使用 0、字节数或 '3GB'/'512MB' 形式。"
+            )
+
+        number = float(match.group(1))
+        unit = (match.group(2) or "b").lower()
+        unit = unit.rstrip("b") if unit in {"k", "m", "g", "t"} else unit
+        multiplier = cls.UNIT_MAP.get(unit, 1)
+        return int(number * multiplier)
 
     @property
     def UPLOAD_PATH(self) -> Path:

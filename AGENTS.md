@@ -29,3 +29,9 @@ Write imperative, scope-aware commits (`backend: improve job progress polling`) 
 
 ## Environment & Ops Notes
 Copy `.env.example` into each service and keep secrets outside git. Place FlashVSR weights in `models/`, keep `storage/` writable or mounted under Docker, install NVIDIA Container Toolkit before `docker compose up`, and prefer symlinks inside `storage/` for large datasets.
+- FlashVSR 的默认模型变体/前端默认选项均已切换为 Tiny Long；如需复用 Tiny 或 Full，请在 `backend/.env` 的 `DEFAULT_MODEL_VARIANT` / `MODEL_VARIANTS_TO_PRELOAD`（以及前端选择器）中显式调整。
+- `FLASHVSR_STREAMING_LQ_MAX_BYTES`（默认 0 表示不限）+ `FLASHVSR_STREAMING_PREFETCH_FRAMES` 控制纯内存 LQ 流式缓冲：后台线程按预读阈值（至少 8n+1 帧）填充，推理线程在每个 8 帧窗口结束后调用 `release_until` 即刻释放旧帧，全程不写 `*.memmap`。想让小视频一次性载入 CPU，可把该阈值调成更大的值，例如 `64GB`。
+- 输出帧数超过 `FLASHVSR_CHUNKED_SAVE_MIN_FRAMES` 时，会按 `FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE` 帧拆分写入 `backend/storage/tmp/chunks_*`，异步落盘后使用 FFmpeg concat 合并；把阈值设为 0 即可恢复一次性写文件。
+- 上传 `.ts`/`.m2ts`/`.mts`/其他非常见后缀时，即便 `preprocess_strategy=none`，后端也会自动用 FFmpeg 重新编码成 MP4 确保 imageio/FlashVSR 可读；若再配合 `preprocess_width`，会同时执行缩放。
+- 若需要在 GPU 推理前先用 FFmpeg 对素材降采样，前端的“预处理策略 + 预处理宽度”会被写入 `TaskParameters`。`preprocess_strategy=always` 时 Celery 会无条件执行 `ffmpeg -vf scale=<width>:-2` 并把临时文件写入 `backend/storage/tmp`；`none` 则跳过缩放但仍可触发上面的容器规范化。FFmpeg/ffprobe 路径通过 `FFMPEG_BINARY` / `FFPROBE_BINARY` 配置，可在 `.env` 中连同 `PREPROCESS_FFMPEG_PRESET`、`PREPROCESS_FFMPEG_CRF` 一起调整，且整个流程仍与纯内存流式缓冲兼容。
+- 留意 `FLASHVSR_CACHE_OFFLOAD`（`auto`/`cpu`/`none`），默认在 ≤24 GB GPU 上把 WanVideo 的 KV cache 下放到 CPU，确保 2×~3× 超分也能稳定运行；可在 `.env` 中覆盖。

@@ -9,7 +9,10 @@ from celery import Task as CeleryTask
 from app.core.celery_app import celery_app
 from app.core.database import SessionLocal
 from app.models.task import Task, TaskStatus
+from app.schemas.task import TaskParameters
 from app.services.flashvsr_service import FlashVSRService
+from app.services.video_preprocessor import VideoPreprocessor
+from app.services.video_metadata import VideoMetadataService
 from app.config import settings
 
 
@@ -50,12 +53,54 @@ def process_video_task(self, task_id: str):
         output_path = str(settings.RESULT_DIR / output_filename)
         
         # 获取处理参数
-        params = task.parameters
-        scale = params.get("scale", settings.DEFAULT_SCALE)
-        sparse_ratio = params.get("sparse_ratio", settings.DEFAULT_SPARSE_RATIO)
-        local_range = params.get("local_range", settings.DEFAULT_LOCAL_RANGE)
-        seed = params.get("seed", settings.DEFAULT_SEED)
-        model_variant = params.get("model_variant", settings.DEFAULT_MODEL_VARIANT)
+        raw_params = task.parameters or {}
+        validated_params = TaskParameters.model_validate(raw_params)
+        scale = validated_params.scale or settings.DEFAULT_SCALE
+        sparse_ratio = validated_params.sparse_ratio or settings.DEFAULT_SPARSE_RATIO
+        local_range = validated_params.local_range or settings.DEFAULT_LOCAL_RANGE
+        seed = validated_params.seed or settings.DEFAULT_SEED
+        model_variant = validated_params.model_variant or settings.DEFAULT_MODEL_VARIANT
+
+        metadata = VideoMetadataService.extract_metadata(input_path)
+        preprocessor = VideoPreprocessor()
+        preprocess_result = preprocessor.maybe_preprocess(
+            Path(input_path),
+            metadata,
+            validated_params,
+        )
+        effective_metadata = preprocess_result.metadata
+        processing_input_path = str(preprocess_result.input_path)
+
+        predicted_width = None
+        predicted_height = None
+        if effective_metadata.width and effective_metadata.height:
+            _, _, predicted_width, predicted_height = FlashVSRService._compute_scaled_dims(
+                effective_metadata.width,
+                effective_metadata.height,
+                scale,
+            )
+
+        # 更新视频信息
+        video_info = task.video_info or {}
+        video_info.update({
+            "width": effective_metadata.width or video_info.get("width"),
+            "height": effective_metadata.height or video_info.get("height"),
+            "fps": effective_metadata.fps or video_info.get("fps"),
+            "total_frames": effective_metadata.total_frames or video_info.get("total_frames"),
+            "bit_rate": effective_metadata.bit_rate or metadata.bit_rate,
+            "avg_frame_rate": effective_metadata.avg_frame_rate or metadata.avg_frame_rate,
+            "preprocess_applied": preprocess_result.applied,
+            "preprocess_strategy": validated_params.preprocess_strategy,
+            "preprocess_width": validated_params.preprocess_width,
+            "preprocess_result_width": effective_metadata.width,
+            "preprocess_result_height": effective_metadata.height,
+            "predicted_output_width": predicted_width,
+            "predicted_output_height": predicted_height,
+        })
+        task.video_info = video_info
+        if effective_metadata.total_frames:
+            task.total_frames = effective_metadata.total_frames
+        db.commit()
         
         # 进度回调函数
         def progress_callback(processed_frames: int, total_frames: int, avg_frame_time: float):
@@ -83,18 +128,22 @@ def process_video_task(self, task_id: str):
         
         # 获取FlashVSR服务实例
         flashvsr_service = FlashVSRService()
-        
+
         # 处理视频
-        result = flashvsr_service.process_video(
-            input_path=input_path,
-            output_path=output_path,
-            scale=scale,
-            sparse_ratio=sparse_ratio,
-            local_range=local_range,
-            seed=seed,
-            model_variant=model_variant,
-            progress_callback=progress_callback,
-        )
+        try:
+            result = flashvsr_service.process_video(
+                input_path=processing_input_path,
+                output_path=output_path,
+                scale=scale,
+                sparse_ratio=sparse_ratio,
+                local_range=local_range,
+                seed=seed,
+                model_variant=model_variant,
+                progress_callback=progress_callback,
+            )
+        finally:
+            if preprocess_result.applied:
+                preprocessor.cleanup(preprocess_result.input_path)
         
         # 更新任务状态为完成
         task.status = TaskStatus.COMPLETED

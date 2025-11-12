@@ -1,6 +1,6 @@
 [submodule "third_party/FlashVSR"]
 	path = third_party/FlashVSR
-	url = https://github.com/OpenImagingLab/FlashVSR
+	url = https://github.com/zji996/FlashVSR
 [submodule "third_party/Block-Sparse-Attention"]
 	path = third_party/Block-Sparse-Attention
 	url = https://github.com/mit-han-lab/Block-Sparse-Attention

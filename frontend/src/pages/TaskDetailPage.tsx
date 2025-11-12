@@ -44,6 +44,12 @@ export default function TaskDetailPage() {
 
   const variantValue = (task.parameters.model_variant ?? 'tiny') as keyof typeof MODEL_VARIANT_LABELS;
   const variantLabel = MODEL_VARIANT_LABELS[variantValue] ?? variantValue;
+  const preprocessStrategyMap: Record<string, string> = {
+    none: '关闭',
+    always: '开启',
+  };
+  const preprocessStrategyLabel =
+    preprocessStrategyMap[task.parameters?.preprocess_strategy ?? 'none'] ?? '关闭';
 
   const getStatusBadge = (status: TaskStatus) => {
     const badges = {
@@ -137,6 +143,16 @@ export default function TaskDetailPage() {
               <div className="text-sm text-gray-600">随机种子</div>
               <div className="text-xl font-semibold">{task.parameters.seed}</div>
             </div>
+            <div className="p-4 bg-gray-50 rounded-lg">
+              <div className="text-sm text-gray-600">预处理策略</div>
+              <div className="text-xl font-semibold">{preprocessStrategyLabel}</div>
+            </div>
+            <div className="p-4 bg-gray-50 rounded-lg">
+              <div className="text-sm text-gray-600">预处理宽度</div>
+              <div className="text-xl font-semibold">
+                {task.parameters.preprocess_width ?? '--'}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -159,6 +175,14 @@ export default function TaskDetailPage() {
                   {task.video_info.total_frames ?? '--'}
                 </div>
               </div>
+              {task.video_info.preprocess_applied !== undefined && (
+                <div className="p-4 bg-gray-50 rounded-lg">
+                  <div className="text-sm text-gray-600">预处理执行</div>
+                  <div className="text-lg font-semibold">
+                    {task.video_info.preprocess_applied ? '已执行' : '未执行'}
+                  </div>
+                </div>
+              )}
               <div className="p-4 bg-gray-50 rounded-lg">
                 <div className="text-sm text-gray-600">帧率</div>
                 <div className="text-lg font-semibold">
@@ -186,6 +210,22 @@ export default function TaskDetailPage() {
                   <div className="text-sm text-gray-600">推理时间</div>
                   <div className="text-lg font-semibold">
                     {task.video_info.inference_time.toFixed(1)}秒
+                  </div>
+                </div>
+              )}
+              {task.video_info.preprocess_result_width && task.video_info.preprocess_result_height && (
+                <div className="p-4 bg-gray-50 rounded-lg">
+                  <div className="text-sm text-gray-600">预处理输出</div>
+                  <div className="text-lg font-semibold">
+                    {task.video_info.preprocess_result_width} × {task.video_info.preprocess_result_height}
+                  </div>
+                </div>
+              )}
+              {task.video_info.predicted_output_width && task.video_info.predicted_output_height && (
+                <div className="p-4 bg-gray-50 rounded-lg">
+                  <div className="text-sm text-gray-600">预计超分输出</div>
+                  <div className="text-lg font-semibold">
+                    {task.video_info.predicted_output_width} × {task.video_info.predicted_output_height}
                   </div>
                 </div>
               )}
