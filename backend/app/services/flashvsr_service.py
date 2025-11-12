@@ -23,6 +23,11 @@ FLASHVSR_PATH = settings.THIRD_PARTY_FLASHVSR_PATH
 if str(FLASHVSR_PATH) not in sys.path:
     sys.path.insert(0, str(FLASHVSR_PATH))
 
+# Block-Sparse 注意力依赖的 CUDA 扩展
+BLOCK_SPARSE_PATH = settings.THIRD_PARTY_BLOCK_SPARSE_PATH
+if str(BLOCK_SPARSE_PATH) not in sys.path:
+    sys.path.insert(0, str(BLOCK_SPARSE_PATH))
+
 from diffsynth import (  # type: ignore  # noqa: E402
     FlashVSRFullPipeline,
     FlashVSRTinyLongPipeline,
@@ -59,6 +64,7 @@ class FlashVSRService:
         "TCDecoder.ckpt",
     )
     FULL_ONLY_FILES: tuple[str, ...] = ("Wan2.1_VAE.pth",)
+    PROMPT_TENSOR_FILE = settings.FLASHVSR_PROMPT_TENSOR_PATH
 
     _instance: Optional["FlashVSRService"] = None
     _pipelines: dict[str, PipelineHandle] = {}
@@ -82,9 +88,12 @@ class FlashVSRService:
 
         for filename in cls.BASE_MODEL_FILES + cls.FULL_ONLY_FILES:
             file_status[filename] = (model_path / filename).exists()
+        file_status["posi_prompt.pth"] = cls.PROMPT_TENSOR_FILE.exists()
 
         def _ready(extra: tuple[str, ...] = ()) -> bool:
-            base_ready = all(file_status[name] for name in cls.BASE_MODEL_FILES)
+            base_ready = file_status["posi_prompt.pth"] and all(
+                file_status[name] for name in cls.BASE_MODEL_FILES
+            )
             extra_ready = all(file_status[name] for name in extra)
             return base_ready and extra_ready
 
@@ -339,6 +348,12 @@ class FlashVSRService:
         """返回最大的 8n+1 <= n."""
         return 0 if n < 1 else ((n - 1) // 8) * 8 + 1
 
+    def preload_variant(self, variant: Optional[str] = None) -> PipelineHandle:
+        """显式预加载指定变体."""
+
+        normalized = self._normalize_variant(variant)
+        return self._get_pipeline_handle(normalized)
+
     def _get_pipeline_handle(self, variant: str) -> PipelineHandle:
         """获取或初始化指定变体的 pipeline."""
 
@@ -369,6 +384,15 @@ class FlashVSRService:
         if variant == "full":
             weights_to_load.append(str(model_path / self.FULL_ONLY_FILES[0]))
         mm.load_models(weights_to_load)
+
+        if not self.PROMPT_TENSOR_FILE.exists():
+            raise FileNotFoundError(
+                "缺少 FlashVSR prompt tensor: "
+                f"{self.PROMPT_TENSOR_FILE}. 请从 third_party/FlashVSR/examples/WanVSR/prompt_tensor "
+                "复制或下载 posi_prompt.pth，详见 docs/deployment.md。"
+            )
+
+        prompt_tensor = torch.load(self.PROMPT_TENSOR_FILE, map_location="cpu")
 
         pipeline_cls_map = {
             "tiny": FlashVSRTinyPipeline,
@@ -413,7 +437,7 @@ class FlashVSRService:
 
         pipe.to(device)
         pipe.enable_vram_management(num_persistent_param_in_dit=None)
-        pipe.init_cross_kv()
+        pipe.init_cross_kv(context_tensor=prompt_tensor)
         pipe.load_models_to_device(["dit", "vae"])
 
         print(f"✅ FlashVSR pipeline ({variant}) 初始化完成")

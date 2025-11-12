@@ -1,8 +1,9 @@
 [project]
-name = "flashvsr-backend"
+name = "backend"
 version = "0.1.0"
-description = "FlashVSR Backend API"
-requires-python = ">=3.11"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi[standard]>=0.115.0",
     "uvicorn[standard]>=0.32.0",
@@ -28,18 +29,6 @@ dependencies = [
     "huggingface-hub>=0.24.0,<1.0",
     "modelscope>=1.31.0",
     "transformers>=4.57.1",
-]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["app"]
-
-[dependency-groups]
-dev = [
-    "pytest>=8.3.0",
-    "pytest-asyncio>=0.24.0",
-    "httpx>=0.27.0",
+    "sentencepiece>=0.2.1",
+    "ftfy>=6.3.1",
 ]

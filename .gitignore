@@ -11,7 +11,8 @@ Thumbs.db
 !.env.example
 backend/.env
 backend/.env.*
-!backend/.env.example
+!backend/.env.compose.example
+!backend/.env.dev.example
 frontend/.env
 frontend/.env.*
 !frontend/.env.example
