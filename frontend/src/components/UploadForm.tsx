@@ -10,20 +10,7 @@ import { tasksApi } from '../api/tasks';
 import { systemApi } from '../api/system';
 import { ModelVariant, type TaskParameters } from '../types';
 
-const PREPROCESS_OPTIONS: Array<{
-  value: TaskParameters['preprocess_strategy'];
-  label: string;
-  description: string;
-}> = [
-  { value: 'none', label: '关闭', description: '直接送入 FlashVSR，不做额外采样。' },
-  {
-    value: 'always',
-    label: '开启',
-    description: '无条件在 GPU 推理前把素材缩放到指定宽度，并按原比例计算高度。',
-  },
-];
-
-const PREPROCESS_WIDTH_OPTIONS = [640, 768, 896, 1024, 1152];
+const PREPROCESS_WIDTH_OPTIONS = [640, 768, 896, 1024, 1152, 1280];
 const SUPPORTED_EXTENSIONS = [
   '.mp4',
   '.mov',
@@ -53,7 +40,6 @@ export default function UploadForm() {
     local_range: 11,
     seed: 0,
     model_variant: ModelVariant.TINY_LONG,
-    preprocess_strategy: 'none',
     preprocess_width: 640,
   });
 
@@ -78,10 +64,9 @@ export default function UploadForm() {
   const readyVariants = systemStatus?.flashvsr?.ready_variants ?? {};
   const selectedVariant = variantOptions.find((option) => option.value === parameters.model_variant);
   const selectedVariantReady = readyVariants?.[parameters.model_variant];
-  const preprocessWidthSelectValue =
-    parameters.preprocess_width && PREPROCESS_WIDTH_OPTIONS.includes(parameters.preprocess_width)
-      ? String(parameters.preprocess_width)
-      : 'custom';
+  const preprocessWidthSelectValue = PREPROCESS_WIDTH_OPTIONS.includes(parameters.preprocess_width)
+    ? String(parameters.preprocess_width)
+    : 'custom';
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: {
@@ -129,6 +114,12 @@ export default function UploadForm() {
     e.preventDefault();
     if (!file) {
       alert('请选择视频文件');
+      return;
+    }
+
+    // Validate preprocess width
+    if (!parameters.preprocess_width || parameters.preprocess_width % 128 !== 0) {
+      alert('预处理宽度必须是 128 的倍数');
       return;
     }
     uploadMutation.mutate({ file, parameters });
@@ -221,30 +212,6 @@ export default function UploadForm() {
             </p>
           )}
         </div>
-        <div className="md:col-span-2">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            预处理策略
-          </label>
-          <select
-            value={parameters.preprocess_strategy}
-            onChange={(e) =>
-              setParameters({
-                ...parameters,
-                preprocess_strategy: e.target.value as TaskParameters['preprocess_strategy'],
-              })
-            }
-            className="input"
-          >
-            {PREPROCESS_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-          <p className="text-xs text-gray-500 mt-1">
-            {PREPROCESS_OPTIONS.find((opt) => opt.value === parameters.preprocess_strategy)?.description}
-          </p>
-        </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
             预处理宽度 (128 的倍数)
@@ -256,11 +223,7 @@ export default function UploadForm() {
                 if (e.target.value === 'custom') {
                   setParameters({
                     ...parameters,
-                    preprocess_width:
-                      parameters.preprocess_width &&
-                      !PREPROCESS_WIDTH_OPTIONS.includes(parameters.preprocess_width)
-                        ? parameters.preprocess_width
-                        : null,
+                    preprocess_width: parameters.preprocess_width,
                   });
                   return;
                 }
@@ -269,7 +232,6 @@ export default function UploadForm() {
                   preprocess_width: parseInt(e.target.value, 10),
                 });
               }}
-              disabled={parameters.preprocess_strategy === 'none'}
               className="input"
             >
               {PREPROCESS_WIDTH_OPTIONS.map((width) => (
@@ -279,27 +241,23 @@ export default function UploadForm() {
               ))}
               <option value="custom">自定义</option>
             </select>
-            {preprocessWidthSelectValue === 'custom' && parameters.preprocess_strategy !== 'none' && (
+            {preprocessWidthSelectValue === 'custom' && (
               <input
                 type="number"
-                min="128"
+                min="640"
                 step="128"
-                value={parameters.preprocess_width ?? ''}
+                value={parameters.preprocess_width}
                 onChange={(e) =>
                   setParameters({
                     ...parameters,
-                    preprocess_width: e.target.value ? parseInt(e.target.value, 10) : null,
+                    preprocess_width: e.target.value ? parseInt(e.target.value, 10) : 640,
                   })
                 }
                 className="input"
               />
             )}
           </div>
-          <p className="text-xs text-gray-500 mt-1">
-            {parameters.preprocess_strategy === 'none'
-              ? '关闭预处理时无需填写'
-              : '从常用档位中选择，或使用自定义输入满足特殊素材。'}
-          </p>
+          <p className="text-xs text-gray-500 mt-1">始终预处理：请选择常用档位，或自定义 128 的倍数（建议 640-1280）。</p>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">

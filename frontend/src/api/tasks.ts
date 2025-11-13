@@ -17,10 +17,7 @@ export const tasksApi = {
     formData.append('local_range', parameters.local_range.toString());
     formData.append('seed', parameters.seed.toString());
     formData.append('model_variant', parameters.model_variant);
-    formData.append('preprocess_strategy', parameters.preprocess_strategy);
-    if (parameters.preprocess_strategy !== 'none' && parameters.preprocess_width) {
-      formData.append('preprocess_width', parameters.preprocess_width.toString());
-    }
+    formData.append('preprocess_width', parameters.preprocess_width.toString());
 
     const response = await apiClient.post<Task>('/api/tasks/', formData, {
       headers: {

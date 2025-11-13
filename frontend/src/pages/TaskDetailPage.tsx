@@ -44,12 +44,6 @@ export default function TaskDetailPage() {
 
   const variantValue = (task.parameters.model_variant ?? 'tiny') as keyof typeof MODEL_VARIANT_LABELS;
   const variantLabel = MODEL_VARIANT_LABELS[variantValue] ?? variantValue;
-  const preprocessStrategyMap: Record<string, string> = {
-    none: '关闭',
-    always: '开启',
-  };
-  const preprocessStrategyLabel =
-    preprocessStrategyMap[task.parameters?.preprocess_strategy ?? 'none'] ?? '关闭';
 
   const getStatusBadge = (status: TaskStatus) => {
     const badges = {
@@ -142,10 +136,6 @@ export default function TaskDetailPage() {
             <div className="p-4 bg-gray-50 rounded-lg">
               <div className="text-sm text-gray-600">随机种子</div>
               <div className="text-xl font-semibold">{task.parameters.seed}</div>
-            </div>
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <div className="text-sm text-gray-600">预处理策略</div>
-              <div className="text-xl font-semibold">{preprocessStrategyLabel}</div>
             </div>
             <div className="p-4 bg-gray-50 rounded-lg">
               <div className="text-sm text-gray-600">预处理宽度</div>

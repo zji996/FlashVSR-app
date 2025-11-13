@@ -70,6 +70,7 @@ def process_video_task(self, task_id: str):
         )
         effective_metadata = preprocess_result.metadata
         processing_input_path = str(preprocess_result.input_path)
+        audio_path = str(preprocess_result.audio_path) if preprocess_result.audio_path else None
 
         predicted_width = None
         predicted_height = None
@@ -90,7 +91,6 @@ def process_video_task(self, task_id: str):
             "bit_rate": effective_metadata.bit_rate or metadata.bit_rate,
             "avg_frame_rate": effective_metadata.avg_frame_rate or metadata.avg_frame_rate,
             "preprocess_applied": preprocess_result.applied,
-            "preprocess_strategy": validated_params.preprocess_strategy,
             "preprocess_width": validated_params.preprocess_width,
             "preprocess_result_width": effective_metadata.width,
             "preprocess_result_height": effective_metadata.height,
@@ -140,6 +140,7 @@ def process_video_task(self, task_id: str):
                 seed=seed,
                 model_variant=model_variant,
                 progress_callback=progress_callback,
+                audio_path=audio_path,
             )
         finally:
             if preprocess_result.applied:

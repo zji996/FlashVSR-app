@@ -20,32 +20,18 @@ class TaskParameters(BaseModel):
         default=settings.DEFAULT_MODEL_VARIANT,
         description="FlashVSR 模型变体",
     )
-    preprocess_strategy: Literal["none", "always", "auto"] = Field(
-        default="none",
-        description="预处理策略（none/always）",
-    )
-    preprocess_width: Optional[int] = Field(
-        default=None,
+    preprocess_width: int = Field(
+        default=640,
         ge=128,
         description="预处理缩放宽度（需为128的倍数）",
     )
 
     @field_validator("preprocess_width")
     @classmethod
-    def validate_multiple_of_128(cls, value: Optional[int]) -> Optional[int]:
-        if value is None:
-            return value
+    def validate_multiple_of_128(cls, value: int) -> int:
         if value % 128 != 0:
             raise ValueError("预处理宽度必须是 128 的倍数")
         return value
-
-    @model_validator(mode="after")
-    def validate_strategy(cls, values: "TaskParameters") -> "TaskParameters":
-        if values.preprocess_strategy == "auto":
-            values.preprocess_strategy = "always"
-        if values.preprocess_strategy != "none" and not values.preprocess_width:
-            raise ValueError("开启预处理时必须设置 preprocess_width")
-        return values
 
 
 class VideoInfo(BaseModel):
@@ -61,7 +47,6 @@ class VideoInfo(BaseModel):
     bit_rate: Optional[int] = None
     avg_frame_rate: Optional[float] = None
     preprocess_applied: Optional[bool] = None
-    preprocess_strategy: Optional[str] = None
     preprocess_width: Optional[int] = None
     preprocess_result_width: Optional[int] = None
     preprocess_result_height: Optional[int] = None

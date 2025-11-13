@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     FLASHVSR_CACHE_OFFLOAD_AUTO_THRESHOLD_GB: float = 24.0
     FLASHVSR_STREAMING_LQ_MAX_BYTES: int = 0
     FLASHVSR_STREAMING_PREFETCH_FRAMES: int = 25
+    FLASHVSR_STREAMING_DECODE_THREADS: int = 2
     FLASHVSR_CHUNKED_SAVE_MIN_FRAMES: int = 600
     FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE: int = 120
     FLASHVSR_CHUNKED_SAVE_TMP_DIR: Path = STORAGE_ROOT / "tmp"
@@ -64,6 +65,11 @@ class Settings(BaseSettings):
     PREPROCESS_TMP_DIR: Path = STORAGE_ROOT / "tmp"
     PREPROCESS_FFMPEG_PRESET: str = "veryfast"
     PREPROCESS_FFMPEG_CRF: int = 23
+    PREPROCESS_FFMPEG_VIDEO_CODEC: str = "libx264"  # libx264|h264_nvenc|libx265|hevc_nvenc
+    PREPROCESS_FFMPEG_HWACCEL: str = ""            # "cuda" to enable hwaccel
+    PREPROCESS_NVENC_PRESET: str = "p5"            # p1..p7 (NVENC-specific)
+    PREPROCESS_NVENC_RC: str = "vbr_hq"            # constqp|vbr|vbr_hq|cbr
+    PREPROCESS_NVENC_CQ: int = 21                  # NVENC quality level
 
     # 任务配置
     MAX_CONCURRENT_TASKS: int = 1  # GPU限制
@@ -118,6 +124,13 @@ class Settings(BaseSettings):
     def _validate_stream_prefetch(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("FLASHVSR_STREAMING_PREFETCH_FRAMES must be > 0")
+        return value
+
+    @field_validator("FLASHVSR_STREAMING_DECODE_THREADS")
+    @classmethod
+    def _validate_stream_threads(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("FLASHVSR_STREAMING_DECODE_THREADS must be > 0")
         return value
 
     @classmethod

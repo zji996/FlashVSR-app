@@ -105,8 +105,14 @@
 
 - 确保 `backend/storage` 与 `backend/models` 在 `.gitignore` 中不会被提交，且 Docker volume 挂载保持一致。
 - `FLASHVSR_CACHE_OFFLOAD` 控制流式 KV cache 的下放策略（`auto`/`cpu`/`none`，默认 `auto`）。显存 ≤ `FLASHVSR_CACHE_OFFLOAD_AUTO_THRESHOLD_GB`（默认 24GB）的 GPU 会自动把注意力缓存转存到 CPU，从而避免大分辨率视频在第 2 个窗口就 OOM；若希望始终启用或关闭，可改成 `cpu` 或 `none`。
-- `FLASHVSR_STREAMING_LQ_MAX_BYTES`（默认 0）配合 `FLASHVSR_STREAMING_PREFETCH_FRAMES` 控制纯内存流式缓冲：后台线程会把 LQ 帧解码到受限的环形缓冲，达到预读阈值（默认 25 帧 ≈ 3 个 8 帧窗口 + 1 帧）后立即启动推理，并由 FlashVSR 推理循环通过 `release_until` 及时释放已消费的帧。把该值设成 `8GB`/`32GB` 等即可限制常驻内存；若希望所有素材都走流式路径并阻塞等待，就保持为 0。
+- `FLASHVSR_STREAMING_LQ_MAX_BYTES`（默认 0）配合 `FLASHVSR_STREAMING_PREFETCH_FRAMES` 与 `FLASHVSR_STREAMING_DECODE_THREADS` 控制纯内存流式缓冲：`services/video_streaming.py` 会预先申请一个受限的环形缓冲（当上限>0 时立即锁定对应内存），并用多线程在 CPU 端解码 LQ 帧，达到预读阈值（默认 25 帧 ≈ 3 个 8 帧窗口 + 1 帧）后即可启动推理。FlashVSR 推理循环通过 `release_until` 及时释放已消费的帧，让 “32GB 顶满即滚动” 场景成为可能，而把上限设成 0 则表示不设界限，只阻塞等待而不写 memmap。
 - `FLASHVSR_CHUNKED_SAVE_MIN_FRAMES` / `FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE` 控制输出分片写入：当帧数超过阈值时，Celery 会把超分结果按固定帧数拆成多个 `backend/storage/tmp/chunks_*/*.mp4`，由后台进程写盘，最后再用 `ffmpeg -f concat` 合并生成最终文件。设为 0 可恢复一次性写入。
-- 需要在 GPU 推理前先做一次 FFmpeg 采样时，可在 `backend/.env` 中设置 `FFMPEG_BINARY`/`FFPROBE_BINARY`（可执行路径）、`PREPROCESS_FFMPEG_PRESET`（默认 `veryfast`）与 `PREPROCESS_FFMPEG_CRF`（默认 `23`）。前端会把“预处理策略 + 目标宽度（128 的倍数）”下发给后端：`none` 表示关闭缩放，`always` 表示无条件执行 `ffmpeg -vf scale=<width>:-2`。无论选择何种策略，上传 `.ts/.m2ts/.mts` 等非常见容器时后端都会自动用 FFmpeg 重新编码为 MP4，生成的临时文件存放在 `backend/storage/tmp/*.mp4`，随后沿用纯内存流式缓冲流程，并在任务结束后自动清理。
+- 需要在 GPU 推理前先做一次 FFmpeg 采样时，可在 `backend/.env` 中设置以下变量：
+  - `FFMPEG_BINARY`/`FFPROBE_BINARY`（可执行路径）
+  - `PREPROCESS_FFMPEG_PRESET`（默认 `veryfast`）与 `PREPROCESS_FFMPEG_CRF`（默认 `23`），用于 CPU（libx264/libx265）编码
+  - `PREPROCESS_FFMPEG_VIDEO_CODEC` 选择编码器（`libx264|h264_nvenc|libx265|hevc_nvenc`）。设置为 `h264_nvenc` 或 `hevc_nvenc` 将启用 NVENC，失败时自动回落到 CPU 编码
+  - `PREPROCESS_FFMPEG_HWACCEL` 可选填写 `cuda` 开启硬件解码
+  - `PREPROCESS_NVENC_PRESET`（`p1`..`p7`）、`PREPROCESS_NVENC_RC`（`vbr_hq` 等）、`PREPROCESS_NVENC_CQ`（默认 21）
+  前端会把“预处理策略 + 目标宽度（128 的倍数）”下发给后端：`none` 表示关闭缩放，`always` 表示无条件执行 `ffmpeg -vf scale=<width>:-2`。无论选择何种策略，上传 `.ts/.m2ts/.mts` 等非常见容器时后端都会自动用 FFmpeg 重新编码为 MP4 并统一像素格式为 `yuv420p`，随后沿用纯内存流式缓冲流程，并在任务结束后自动清理。
 - Celery worker 默认并发 1，可通过 `MAX_CONCURRENT_TASKS` + Redis 锁扩展。
 - 前端在生产中由 Nginx 代理 `/api` 到后端，因此无需在 `frontend/.env` 中硬编码 `VITE_API_BASE_URL`（除非使用独立部署）。

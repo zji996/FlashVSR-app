@@ -31,8 +31,7 @@ export interface TaskParameters {
   local_range: number;
   seed: number;
   model_variant: ModelVariant;
-  preprocess_strategy: 'none' | 'always';
-  preprocess_width?: number | null;
+  preprocess_width: number;
 }
 
 export interface VideoInfo {
@@ -47,7 +46,6 @@ export interface VideoInfo {
   bit_rate?: number;
   avg_frame_rate?: number;
   preprocess_applied?: boolean;
-  preprocess_strategy?: string;
   preprocess_width?: number;
   preprocess_result_width?: number;
   preprocess_result_height?: number;
