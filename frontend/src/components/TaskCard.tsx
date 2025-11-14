@@ -56,7 +56,7 @@ export default function TaskCard({ task }: TaskCardProps) {
     return `${Math.floor(seconds / 3600)}小时${Math.floor((seconds % 3600) / 60)}分`;
   };
 
-  const variantValue = (task.parameters.model_variant ?? 'tiny') as keyof typeof MODEL_VARIANT_LABELS;
+  const variantValue = (task.parameters.model_variant ?? 'tiny_long') as keyof typeof MODEL_VARIANT_LABELS;
   const variantLabel = MODEL_VARIANT_LABELS[variantValue] ?? variantValue;
 
   return (

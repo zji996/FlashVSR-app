@@ -30,11 +30,10 @@ router = APIRouter()
 @router.post("/", response_model=TaskResponse, status_code=201)
 async def create_task(
     file: UploadFile = File(...),
-    scale: float = Form(default=4.0),
+    scale: float = Form(default=settings.DEFAULT_SCALE),
     sparse_ratio: float = Form(default=2.0),
     local_range: int = Form(default=11),
     seed: int = Form(default=0),
-    model_variant: str = Form(default=settings.DEFAULT_MODEL_VARIANT),
     preprocess_width: int = Form(default=640),
     db: Session = Depends(get_db),
 ):
@@ -45,9 +44,8 @@ async def create_task(
     - **scale**: 超分倍数 (1.0-8.0)
     - **sparse_ratio**: 稀疏比率 (1.0-4.0)
     - **local_range**: 局部范围 (7-15)
-    - **seed**: 随机种子
-    - **model_variant**: FlashVSR 模型变体（tiny / tiny_long / full）
-    - **preprocess_width**: 预处理目标宽度（128 的倍数）
+    - **seed**: 随机种子（当前仅 Tiny Long 变体，前端无需选择模型）
+    - **preprocess_width**: 预处理目标宽度（像素，建议 640-1280 常见档位）
     """
     # 验证文件类型
     if not file.filename:
@@ -120,7 +118,7 @@ async def create_task(
             sparse_ratio=sparse_ratio,
             local_range=local_range,
             seed=seed,
-            model_variant=model_variant,
+            model_variant=settings.DEFAULT_MODEL_VARIANT,
             preprocess_width=preprocess_width,
         )
     except ValidationError as exc:

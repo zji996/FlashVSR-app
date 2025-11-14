@@ -27,8 +27,7 @@
   - `scale`: 超分倍数，1.0-8.0，默认 4.0。
   - `sparse_ratio`: 稀疏率，1.0-4.0，默认 2.0。
   - `local_range`: 局部范围，7-15，默认 11。
-  - `seed`: 随机种子，默认 0。
-  - `model_variant`: `tiny`/`tiny_long`/`full`，默认由 `DEFAULT_MODEL_VARIANT` 控制。
+  - `seed`: 随机种子，默认 0（当前服务端始终使用 Tiny Long 变体，客户端无需选择模型）。
 - **响应**：`TaskResponse`（见下文）。
 - **错误**：400（文件/参数校验失败）、413（超出 `MAX_UPLOAD_SIZE`）或 500（保存失败）。
 

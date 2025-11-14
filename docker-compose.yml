@@ -22,7 +22,7 @@ services:
       - ./backend/app:/app/backend/app
       - ./backend/storage:/app/storage
       - ./backend/models:/app/models:ro
-      - ./third_party/FlashVSR:/app/third_party/FlashVSR:ro
+      # third_party/FlashVSR 不再参与运行时导入，仅保留为参考
     depends_on:
       - postgres
       - redis
@@ -58,7 +58,6 @@ services:
       - ./backend/app:/app/backend/app
       - ./backend/storage:/app/storage
       - ./backend/models:/app/models:ro
-      - ./third_party/FlashVSR:/app/third_party/FlashVSR:ro
     depends_on:
       - backend
       - postgres
@@ -93,7 +92,6 @@ services:
       - ./backend/app:/app/backend/app
       - ./backend/storage:/app/storage
       - ./backend/models:/app/models:ro
-      - ./third_party/FlashVSR:/app/third_party/FlashVSR:ro
     depends_on:
       - backend
       - postgres

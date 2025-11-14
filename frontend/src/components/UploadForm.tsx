@@ -10,7 +10,7 @@ import { tasksApi } from '../api/tasks';
 import { systemApi } from '../api/system';
 import { ModelVariant, type TaskParameters } from '../types';
 
-const PREPROCESS_WIDTH_OPTIONS = [640, 768, 896, 1024, 1152, 1280];
+const PREPROCESS_WIDTH_OPTIONS = [640, 768, 896, 960, 1024, 1152, 1280];
 const SUPPORTED_EXTENSIONS = [
   '.mp4',
   '.mov',
@@ -35,35 +35,17 @@ export default function UploadForm() {
   });
   const [file, setFile] = useState<File | null>(null);
   const [parameters, setParameters] = useState<TaskParameters>({
-    scale: 4.0,
+    scale: 2.0,
     sparse_ratio: 2.0,
     local_range: 11,
     seed: 0,
     model_variant: ModelVariant.TINY_LONG,
     preprocess_width: 640,
   });
-
-  const variantOptions: Array<{ value: ModelVariant; label: string; description: string }> = [
-    {
-      value: ModelVariant.TINY_LONG,
-      label: 'Tiny Long（默认）',
-      description: '长序列/逐帧图片友好版本，针对 8n-3 帧裁切优化。',
-    },
-    {
-      value: ModelVariant.TINY,
-      label: 'Tiny',
-      description: '4× 推理，显存占用最低，适合绝大多数视频。',
-    },
-    {
-      value: ModelVariant.FULL,
-      label: 'Full（最高画质）',
-      description: '全尺寸模型，需要 Wan2.1 VAE 权重与更高显存。',
-    },
-  ];
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const readyVariants = systemStatus?.flashvsr?.ready_variants ?? {};
-  const selectedVariant = variantOptions.find((option) => option.value === parameters.model_variant);
-  const selectedVariantReady = readyVariants?.[parameters.model_variant];
+  const tinyLongReady = readyVariants?.[ModelVariant.TINY_LONG];
   const preprocessWidthSelectValue = PREPROCESS_WIDTH_OPTIONS.includes(parameters.preprocess_width)
     ? String(parameters.preprocess_width)
     : 'custom';
@@ -118,8 +100,8 @@ export default function UploadForm() {
     }
 
     // Validate preprocess width
-    if (!parameters.preprocess_width || parameters.preprocess_width % 128 !== 0) {
-      alert('预处理宽度必须是 128 的倍数');
+    if (!parameters.preprocess_width || parameters.preprocess_width < 128) {
+      alert('预处理宽度必须不小于 128 像素');
       return;
     }
     uploadMutation.mutate({ file, parameters });
@@ -178,35 +160,35 @@ export default function UploadForm() {
       <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="md:col-span-2">
           <label className="block text-sm font-medium text-gray-700 mb-2">
-            模型变体
+            模型
           </label>
-          <select
-            value={parameters.model_variant}
-            onChange={(e) =>
-              setParameters({
-                ...parameters,
-                model_variant: e.target.value as ModelVariant,
-              })
-            }
-            className="input"
-          >
-            {variantOptions.map((option) => {
-              const ready = readyVariants?.[option.value] ?? true;
-              return (
-                <option key={option.value} value={option.value} disabled={!ready}>
-                  {option.label}
-                  {!ready ? '（权重未就绪）' : ''}
-                </option>
-              );
-            })}
-          </select>
-          <p className="text-xs text-gray-500 mt-1">
-            {selectedVariant?.description ?? '选择不同变体以平衡显存与画质需求。'}
-            {systemStatus?.flashvsr?.version
-              ? ` · FlashVSR ${systemStatus.flashvsr.version}`
-              : ''}
-          </p>
-          {selectedVariantReady === false && systemStatus?.flashvsr && (
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <div className="text-sm font-medium text-gray-900">
+                Tiny Long（固定）
+              </div>
+              <p className="text-xs text-gray-500">
+                专为长序列和逐帧图片优化的 FlashVSR v1.1 Tiny Long 变体。
+              </p>
+            </div>
+            {systemStatus?.flashvsr && (
+              <div className="flex items-center gap-2">
+                <span
+                  className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
+                    tinyLongReady
+                      ? 'bg-green-50 text-green-700 ring-1 ring-green-600/20'
+                      : 'bg-red-50 text-red-700 ring-1 ring-red-600/20'
+                  }`}
+                >
+                  {tinyLongReady ? '权重已就绪' : '权重缺失'}
+                </span>
+                <span className="text-xs text-gray-500">
+                  FlashVSR {systemStatus.flashvsr.version}
+                </span>
+              </div>
+            )}
+          </div>
+          {tinyLongReady === false && systemStatus?.flashvsr && (
             <p className="text-xs text-red-600 mt-1">
               缺少权重: {systemStatus.flashvsr.missing_files.join(', ') || '请参考 README 下载。'}
             </p>
@@ -214,7 +196,7 @@ export default function UploadForm() {
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
-            预处理宽度 (128 的倍数)
+            预处理宽度 (像素)
           </label>
           <div className="space-y-3">
             <select
@@ -257,85 +239,101 @@ export default function UploadForm() {
               />
             )}
           </div>
-          <p className="text-xs text-gray-500 mt-1">始终预处理：请选择常用档位，或自定义 128 的倍数（建议 640-1280）。</p>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            超分倍数 (Scale)
-          </label>
-          <input
-            type="number"
-            min="1"
-            max="8"
-            step="0.1"
-            value={parameters.scale}
-            onChange={(e) =>
-              setParameters({ ...parameters, scale: parseFloat(e.target.value) })
-            }
-            className="input"
-          />
-          <p className="text-xs text-gray-500 mt-1">推荐值: 2.0</p>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            稀疏比率 (Sparse Ratio)
-          </label>
-          <input
-            type="number"
-            min="1"
-            max="4"
-            step="0.1"
-            value={parameters.sparse_ratio}
-            onChange={(e) =>
-              setParameters({
-                ...parameters,
-                sparse_ratio: parseFloat(e.target.value),
-              })
-            }
-            className="input"
-          />
-          <p className="text-xs text-gray-500 mt-1">推荐值: 1.5 (快) 或 2.0 (稳定)</p>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            局部范围 (Local Range)
-          </label>
-          <input
-            type="number"
-            min="7"
-            max="15"
-            step="2"
-            value={parameters.local_range}
-            onChange={(e) =>
-              setParameters({
-                ...parameters,
-                local_range: parseInt(e.target.value),
-              })
-            }
-            className="input"
-          />
           <p className="text-xs text-gray-500 mt-1">
-            推荐值: 9 (更锐利) 或 11 (更稳定)
+            始终预处理：请选择常用档位，或自定义宽度（建议 640-1280）。常见值如 960 配合 2× 超分可接近 1080p。
           </p>
         </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            随机种子 (Seed)
-          </label>
-          <input
-            type="number"
-            min="0"
-            value={parameters.seed}
-            onChange={(e) =>
-              setParameters({ ...parameters, seed: parseInt(e.target.value) })
-            }
-            className="input"
-          />
-          <p className="text-xs text-gray-500 mt-1">0 为随机</p>
+        <div className="md:col-span-2">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((prev) => !prev)}
+            className="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1"
+          >
+            <span>{showAdvanced ? '隐藏高级参数' : '显示高级参数（可选）'}</span>
+          </button>
         </div>
+
+        {showAdvanced && (
+          <>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                超分倍数 (Scale)
+              </label>
+              <input
+                type="number"
+                min="1"
+                max="8"
+                step="0.1"
+                value={parameters.scale}
+                onChange={(e) =>
+                  setParameters({ ...parameters, scale: parseFloat(e.target.value) })
+                }
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">推荐值: 2.0</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                稀疏比率 (Sparse Ratio)
+              </label>
+              <input
+                type="number"
+                min="1"
+                max="4"
+                step="0.1"
+                value={parameters.sparse_ratio}
+                onChange={(e) =>
+                  setParameters({
+                    ...parameters,
+                    sparse_ratio: parseFloat(e.target.value),
+                  })
+                }
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">推荐值: 1.5 (快) 或 2.0 (稳定)</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                局部范围 (Local Range)
+              </label>
+              <input
+                type="number"
+                min="7"
+                max="15"
+                step="2"
+                value={parameters.local_range}
+                onChange={(e) =>
+                  setParameters({
+                    ...parameters,
+                    local_range: parseInt(e.target.value),
+                  })
+                }
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                推荐值: 9 (更锐利) 或 11 (更稳定)
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                随机种子 (Seed)
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={parameters.seed}
+                onChange={(e) =>
+                  setParameters({ ...parameters, seed: parseInt(e.target.value) })
+                }
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">0 为随机</p>
+            </div>
+          </>
+        )}
       </div>
 
       {/* 提交按钮 */}

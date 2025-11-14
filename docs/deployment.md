@@ -25,14 +25,46 @@
      - 如仍遇到 OOM，可进一步下调上述数值至 2 或 1。
    - 如果提示 `The detected CUDA version ... mismatches ... torch.version.cuda`，需安装与当前 PyTorch (`torch.version.cuda` 显示的版本) 一致的 CUDA Toolkit，或改用匹配版本的 PyTorch wheel。
 2. **准备模型权重**
+   默认约定权重放在 `backend/models/FlashVSR-v1.1`，但权重文件本身不会随仓库分发，需要你自行下载或从私有存储同步。至少需要：
+   - `diffusion_pytorch_model_streaming_dmd.safetensors`
+   - `LQ_proj_in.ckpt`
+   - `TCDecoder.ckpt`
+   - `Wan2.1_VAE.pth`（当前仅 Tiny Long 会使用其中部分模块）
+   - `posi_prompt.pth`（prompt tensor）
+
+   典型布局如下：
    ```bash
    mkdir -p backend/models/FlashVSR-v1.1
-   cd backend/models/FlashVSR-v1.1
-   git clone https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1 tmp
-   mv tmp/* . && rm -rf tmp
+   ls backend/models/FlashVSR-v1.1
+   # diffusion_pytorch_model_streaming_dmd.safetensors
+   # LQ_proj_in.ckpt
+   # TCDecoder.ckpt
+   # Wan2.1_VAE.pth
+   # posi_prompt.pth
    ```
-   或者通过 `third_party/FlashVSR/examples/...` 中的权重建立软链。
-   - FastAPI 会默认从 `third_party/FlashVSR/examples/WanVSR/prompt_tensor/posi_prompt.pth` 读取 prompt tensor（即 submodule 自带的位置）。若你更改或精简了第三方目录，可在 `backend/.env` 中设置 `FLASHVSR_PROMPT_TENSOR_PATH` 指向新的 `.pth` 文件。
+
+   你可以根据自己的分发方式选择其一：
+
+   - 使用外部权重仓库（推荐）：在 Hugging Face / GitHub Releases / 内部对象存储中维护一份 FlashVSR v1.1 权重，然后在部署机器上拉取到 `backend/models/FlashVSR-v1.1`。例如：
+     ```bash
+     mkdir -p backend/models/FlashVSR-v1.1
+     cd backend/models/FlashVSR-v1.1
+     # 伪代码：按实际地址替换 YOUR_ENDPOINT
+     aria2c -x 4 -s 4 -o diffusion_pytorch_model_streaming_dmd.safetensors https://YOUR_ENDPOINT/diffusion_pytorch_model_streaming_dmd.safetensors
+     # 其余文件同理
+     ```
+   - 复用已有 FlashVSR 仓库中的权重：如果你在 `third_party/FlashVSR` 或其他路径下已有完整权重，可用软链接或拷贝的方式同步（注意不要把大文件直接提交到当前 Git 仓库）：
+     ```bash
+     mkdir -p backend/models/FlashVSR-v1.1
+     ln -s /path/to/your/FlashVSR-v1.1/* backend/models/FlashVSR-v1.1/
+     # 或者 cp -n /path/to/your/FlashVSR-v1.1/* backend/models/FlashVSR-v1.1/
+     ```
+
+   - FastAPI 默认从 `backend/models/FlashVSR-v1.1/posi_prompt.pth` 读取 prompt tensor。若你需要自定义路径（例如放在共享权重目录中），可在 `backend/.env` 中设置：
+     ```bash
+     FLASHVSR_MODEL_PATH="/abs/path/to/FlashVSR-v1.1"
+     FLASHVSR_PROMPT_TENSOR_PATH="/abs/path/to/FlashVSR-v1.1/posi_prompt.pth"
+     ```
 3. **复制环境变量模版并调整**
    ```bash
    # 本地开发：依赖由 docker-compose.dev.yml 提供
@@ -70,11 +102,11 @@
 ## Docker Compose 全栈
 
 1. 确保宿主机安装 NVIDIA Container Toolkit 并拥有 GPU 驱动。
-2. 保证模型与存储目录存在并可读写：
+2. 保证模型与存储目录存在并可读写（权重仍需按上一节说明单独下发）：
    ```bash
    mkdir -p backend/models backend/storage/uploads backend/storage/results
    mkdir -p backend/models/FlashVSR-v1.1
-   cd backend/models/FlashVSR-v1.1 && git lfs clone https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1 tmp && mv tmp/* . && rm -rf tmp
+   # 请将 FlashVSR v1.1 权重文件放入 backend/models/FlashVSR-v1.1（或在 backend/.env 中覆盖 FLASHVSR_MODEL_PATH）
    ```
 3. 复制 `.env`：
    ```bash
@@ -203,13 +235,17 @@ export FLASHVSR_PP_OVERLAP=1
 - 确保 `backend/storage` 与 `backend/models` 在 `.gitignore` 中不会被提交，且 Docker volume 挂载保持一致。
 - `FLASHVSR_CACHE_OFFLOAD` 控制流式 KV cache 的下放策略（`auto`/`cpu`/`none`，默认 `auto`）。显存 ≤ `FLASHVSR_CACHE_OFFLOAD_AUTO_THRESHOLD_GB`（默认 24GB）的 GPU 会自动把注意力缓存转存到 CPU，从而避免大分辨率视频在第 2 个窗口就 OOM；若希望始终启用或关闭，可改成 `cpu` 或 `none`。
 - `FLASHVSR_STREAMING_LQ_MAX_BYTES`（默认 0）配合 `FLASHVSR_STREAMING_PREFETCH_FRAMES` 与 `FLASHVSR_STREAMING_DECODE_THREADS` 控制纯内存流式缓冲：`services/video_streaming.py` 会预先申请一个受限的环形缓冲（当上限>0 时立即锁定对应内存），并用多线程在 CPU 端解码 LQ 帧，达到预读阈值（默认 25 帧 ≈ 3 个 8 帧窗口 + 1 帧）后即可启动推理。FlashVSR 推理循环通过 `release_until` 及时释放已消费的帧，让 “32GB 顶满即滚动” 场景成为可能，而把上限设成 0 则表示不设界限，只阻塞等待而不写 memmap。
+  - 该上限只影响 **输入 LQ 流** 在 CPU 内存中最多缓存多少帧，与输出分片（`FLASHVSR_CHUNKED_SAVE_*`）无直接关系；模型每次只需要几十帧的滑动窗口（约 8n+1 帧）即可连续推理。
+  - 实际调参可以按“目标分辨率 + 工作集帧数”估算：单帧占用近似为 `H * W * 3 * 2 bytes`（bfloat16），工作集可取 `32~64` 帧。例如 2×1080p（模型侧约 1920×1024）时，64 帧约 0.8 GiB，因此设置为 `1GB`~`2GB` 已足够；更高分辨率或希望更充足的预读再相应增大。
+  - 若希望小视频一次载入 CPU 内存，可将该值设得更大（如 `32GB` 或 `64GB`）；若机器内存紧张则可以下调至 `1GB`~`2GB`，对推理速度影响有限。
 - `FLASHVSR_CHUNKED_SAVE_MIN_FRAMES` / `FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE` 控制输出分片写入：当帧数超过阈值时，Celery 会把超分结果按固定帧数拆成多个 `backend/storage/tmp/chunks_*/*.mp4`，由后台进程写盘，最后再用 `ffmpeg -f concat` 合并生成最终文件。设为 0 可恢复一次性写入。
+- `FLASHVSR_EXPORT_VIDEO_QUALITY` 控制最终结果视频在导出阶段的编码质量（整数 1–10，默认 6，数值越大质量越高、码率与文件体积越大）。该参数同时作用于普通导出与分片写盘两条路径，编码本身在 CPU 上完成，不额外占用 GPU 算力。
 - 需要在 GPU 推理前先做一次 FFmpeg 采样时，可在 `backend/.env` 中设置以下变量：
   - `FFMPEG_BINARY`/`FFPROBE_BINARY`（可执行路径）
   - `PREPROCESS_FFMPEG_PRESET`（默认 `veryfast`）与 `PREPROCESS_FFMPEG_CRF`（默认 `23`），用于 CPU（libx264/libx265）编码
   - `PREPROCESS_FFMPEG_VIDEO_CODEC` 选择编码器（`libx264|h264_nvenc|libx265|hevc_nvenc`）。设置为 `h264_nvenc` 或 `hevc_nvenc` 将启用 NVENC，失败时自动回落到 CPU 编码
   - `PREPROCESS_FFMPEG_HWACCEL` 可选填写 `cuda` 开启硬件解码
   - `PREPROCESS_NVENC_PRESET`（`p1`..`p7`）、`PREPROCESS_NVENC_RC`（`vbr_hq` 等）、`PREPROCESS_NVENC_CQ`（默认 21）
-  前端会把“预处理策略 + 目标宽度（128 的倍数）”下发给后端：`none` 表示关闭缩放，`always` 表示无条件执行 `ffmpeg -vf scale=<width>:-2`。无论选择何种策略，上传 `.ts/.m2ts/.mts` 等非常见容器时后端都会自动用 FFmpeg 重新编码为 MP4 并统一像素格式为 `yuv420p`，随后沿用纯内存流式缓冲流程，并在任务结束后自动清理。
+  前端会把“预处理策略 + 目标宽度（像素）”下发给后端：`always` 表示统一执行 `ffmpeg -vf scale=<width>:-2`，常见宽度如 640/768/896/960/1024/1152/1280。无论选择何种策略，上传 `.ts/.m2ts/.mts` 等非常见容器时后端都会自动用 FFmpeg 重新编码为 MP4 并统一像素格式为 `yuv420p`，随后沿用纯内存流式缓冲流程，并在任务结束后自动清理。
 - Celery worker 默认并发 1，可通过 `MAX_CONCURRENT_TASKS` + Redis 锁扩展。
 - 前端在生产中由 Nginx 代理 `/api` 到后端，因此无需在 `frontend/.env` 中硬编码 `VITE_API_BASE_URL`（除非使用独立部署）。

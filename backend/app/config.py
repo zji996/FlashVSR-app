@@ -42,16 +42,13 @@ class Settings(BaseSettings):
 
     # third_party 保留在项目根目录
     THIRD_PARTY_ROOT: Path = PROJECT_ROOT / "third_party"
-    THIRD_PARTY_FLASHVSR_PATH: Path = THIRD_PARTY_ROOT / "FlashVSR"
     THIRD_PARTY_BLOCK_SPARSE_PATH: Path = THIRD_PARTY_ROOT / "Block-Sparse-Attention"
 
     # 模型配置（models/ 移动到 backend/ 下）
     MODEL_ROOT: Path = BACKEND_ROOT / "models"
     FLASHVSR_VERSION: str = "v1.1"
     FLASHVSR_MODEL_PATH: Path = MODEL_ROOT / "FlashVSR-v1.1"
-    FLASHVSR_PROMPT_TENSOR_PATH: Path = (
-        THIRD_PARTY_FLASHVSR_PATH / "examples" / "WanVSR" / "prompt_tensor" / "posi_prompt.pth"
-    )
+    FLASHVSR_PROMPT_TENSOR_PATH: Path = FLASHVSR_MODEL_PATH / "posi_prompt.pth"
     FLASHVSR_CACHE_OFFLOAD: str = "auto"  # auto | cpu | none
     FLASHVSR_CACHE_OFFLOAD_AUTO_THRESHOLD_GB: float = 24.0
     # 可选：指定设备，例如 "cuda", "cuda:0", "cuda:1"，为空则自动选择
@@ -68,6 +65,7 @@ class Settings(BaseSettings):
     FLASHVSR_CHUNKED_SAVE_MIN_FRAMES: int = 600
     FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE: int = 120
     FLASHVSR_CHUNKED_SAVE_TMP_DIR: Path = STORAGE_ROOT / "tmp"
+    FLASHVSR_EXPORT_VIDEO_QUALITY: int = 6
     FFMPEG_BINARY: str = "ffmpeg"
     FFPROBE_BINARY: str = "ffprobe"
     PREPROCESS_TMP_DIR: Path = STORAGE_ROOT / "tmp"
@@ -139,6 +137,13 @@ class Settings(BaseSettings):
     def _validate_stream_threads(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("FLASHVSR_STREAMING_DECODE_THREADS must be > 0")
+        return value
+
+    @field_validator("FLASHVSR_EXPORT_VIDEO_QUALITY")
+    @classmethod
+    def _validate_export_quality(cls, value: int) -> int:
+        if not 1 <= value <= 10:
+            raise ValueError("FLASHVSR_EXPORT_VIDEO_QUALITY must be between 1 and 10")
         return value
 
     @classmethod

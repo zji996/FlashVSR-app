@@ -12,17 +12,13 @@ export const TaskStatus = {
 export type TaskStatus = (typeof TaskStatus)[keyof typeof TaskStatus];
 
 export const ModelVariant = {
-  TINY: 'tiny',
   TINY_LONG: 'tiny_long',
-  FULL: 'full',
 } as const;
 
 export type ModelVariant = (typeof ModelVariant)[keyof typeof ModelVariant];
 
 export const MODEL_VARIANT_LABELS: Record<ModelVariant, string> = {
-  [ModelVariant.TINY]: 'Tiny',
   [ModelVariant.TINY_LONG]: 'Tiny Long',
-  [ModelVariant.FULL]: 'Full',
 };
 
 export interface TaskParameters {

@@ -16,7 +16,7 @@ export const tasksApi = {
     formData.append('sparse_ratio', parameters.sparse_ratio.toString());
     formData.append('local_range', parameters.local_range.toString());
     formData.append('seed', parameters.seed.toString());
-    formData.append('model_variant', parameters.model_variant);
+    // 模型变体在后端固定为 tiny_long，这里不再发送字段，保留在 TaskParameters 仅用于响应展示。
     formData.append('preprocess_width', parameters.preprocess_width.toString());
 
     const response = await apiClient.post<Task>('/api/tasks/', formData, {

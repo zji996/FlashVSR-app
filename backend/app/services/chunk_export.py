@@ -126,7 +126,7 @@ class ChunkedExportSession:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         self.writer = ChunkedVideoWriter(
             fps=fps,
-            quality=6,
+            quality=settings.FLASHVSR_EXPORT_VIDEO_QUALITY,
             chunk_dir=self.chunk_dir,
             base_name=Path(output_path).stem,
         )

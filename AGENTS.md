@@ -33,5 +33,6 @@ Copy `.env.example` into each service and keep secrets outside git. Place FlashV
 - `FLASHVSR_STREAMING_LQ_MAX_BYTES`（默认 0 表示不限）+ `FLASHVSR_STREAMING_PREFETCH_FRAMES` 控制纯内存 LQ 流式缓冲：后台线程按预读阈值（至少 8n+1 帧）填充，推理线程在每个 8 帧窗口结束后调用 `release_until` 即刻释放旧帧，全程不写 `*.memmap`。想让小视频一次性载入 CPU，可把该阈值调成更大的值，例如 `64GB`。
 - 输出帧数超过 `FLASHVSR_CHUNKED_SAVE_MIN_FRAMES` 时，会按 `FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE` 帧拆分写入 `backend/storage/tmp/chunks_*`，异步落盘后使用 FFmpeg concat 合并；把阈值设为 0 即可恢复一次性写文件。
 - 上传 `.ts`/`.m2ts`/`.mts`/其他非常见后缀会统一用 FFmpeg 重新编码为 MP4 确保 imageio/FlashVSR 可读；并始终按 `preprocess_width` 执行缩放（`scale=<width>:-2`）。
-- 前端始终下发 `preprocess_width`（128 的倍数）；后端统一在 `backend/storage/tmp` 生成临时 MP4，并在推理完成后合并音轨生成最终输出。FFmpeg/ffprobe 路径通过 `FFMPEG_BINARY` / `FFPROBE_BINARY` 配置，可在 `.env` 中连同 `PREPROCESS_FFMPEG_PRESET`、`PREPROCESS_FFMPEG_CRF` 与 NVENC 相关参数一起调整，且整个流程与纯内存流式缓冲兼容。
-- 留意 `FLASHVSR_CACHE_OFFLOAD`（`auto`/`cpu`/`none`），默认在 ≤24 GB GPU 上把 WanVideo 的 KV cache 下放到 CPU，确保 2×~3× 超分也能稳定运行；可在 `.env` 中覆盖。
+- 前端下发 `preprocess_width`（建议 640–1280 常见档位，如 640/768/896/960/1024/1152/1280，**不再强制 128 的倍数**）；后端统一在 `backend/storage/tmp` 生成临时 MP4，模型侧再按 `scale` 放大并把最终高宽向下对齐为 128 的倍数，以满足 WanVideo 窗口 `(2, 8, 8)` 的整除约束，避免 `Dims must divide by window size.`。FFmpeg/ffprobe 路径通过 `FFMPEG_BINARY` / `FFPROBE_BINARY` 配置，可在 `.env` 中连同 `PREPROCESS_FFMPEG_PRESET`、`PREPROCESS_FFMPEG_CRF` 与 NVENC 相关参数一起调整，且整个流程与纯内存流式缓冲兼容。
+- 预处理与超分推荐组合：为了在体验与速度之间平衡，常用配置为 `preprocess_width=960, scale=2.0`（接近 1080p 输出，内部按 128 对齐），更高分辨率可以选 1152/1280 搭配 2× 或 4×；修改 `_compute_scaled_dims` 时请保持 `multiple=128`，不要恢复为 16，避免破坏窗口对齐。
+- 留意 `FLASHVSR_CACHE_OFFLOAD`（`auto`/`cpu`/`none`），默认在 ≤19 GB GPU 上把 WanVideo 的 KV cache 下放到 CPU，确保 2×~3× 超分也能稳定运行；可在 `.env` 中覆盖。

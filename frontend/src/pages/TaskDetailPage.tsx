@@ -42,7 +42,7 @@ export default function TaskDetailPage() {
     );
   }
 
-  const variantValue = (task.parameters.model_variant ?? 'tiny') as keyof typeof MODEL_VARIANT_LABELS;
+  const variantValue = (task.parameters.model_variant ?? 'tiny_long') as keyof typeof MODEL_VARIANT_LABELS;
   const variantLabel = MODEL_VARIANT_LABELS[variantValue] ?? variantValue;
 
   const getStatusBadge = (status: TaskStatus) => {

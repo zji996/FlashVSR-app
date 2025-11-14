@@ -33,14 +33,6 @@ COPY backend/app /app/backend/app
 COPY backend/alembic /app/backend/alembic
 COPY backend/alembic.ini /app/backend/
 
-# 复制FlashVSR第三方库
-COPY third_party/FlashVSR /app/third_party/FlashVSR
-
-# 安装FlashVSR依赖
-WORKDIR /app/third_party/FlashVSR
-RUN pip3 install --no-cache-dir -e .
-RUN pip3 install --no-cache-dir -r requirements.txt
-
 # 安装Block-Sparse-Attention
 RUN git clone https://github.com/mit-han-lab/Block-Sparse-Attention /tmp/Block-Sparse-Attention && \
     cd /tmp/Block-Sparse-Attention && \
@@ -56,7 +48,7 @@ RUN uv pip install --system .
 RUN mkdir -p /app/storage/uploads /app/storage/results
 
 # 设置环境变量
-ENV PYTHONPATH=/app:/app/third_party/FlashVSR:$PYTHONPATH
+ENV PYTHONPATH=/app:$PYTHONPATH
 ENV PYTHONUNBUFFERED=1
 
 # 暴露端口

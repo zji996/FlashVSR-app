@@ -26,31 +26,13 @@ from tqdm import tqdm
 from app.config import settings
 from app.services.chunk_export import ChunkedExportSession
 from app.services.video_streaming import StreamingVideoTensor
-
-# 将 FlashVSR 加入 Python Path
-FLASHVSR_PATH = settings.THIRD_PARTY_FLASHVSR_PATH
-if str(FLASHVSR_PATH) not in sys.path:
-    sys.path.insert(0, str(FLASHVSR_PATH))
+from app.flashvsr_core import FlashVSRTinyLongPipeline, ModelManager
+from app.flashvsr_core.wan_utils import build_tcdecoder, Causal_LQ4x_Proj
 
 # Block-Sparse 注意力依赖的 CUDA 扩展
 BLOCK_SPARSE_PATH = settings.THIRD_PARTY_BLOCK_SPARSE_PATH
 if str(BLOCK_SPARSE_PATH) not in sys.path:
     sys.path.insert(0, str(BLOCK_SPARSE_PATH))
-
-from diffsynth import (  # type: ignore  # noqa: E402
-    FlashVSRFullPipeline,
-    FlashVSRTinyLongPipeline,
-    FlashVSRTinyPipeline,
-    ModelManager,
-)
-
-# 导入 FlashVSR 工具函数
-WANVSR_PATH = FLASHVSR_PATH / "examples" / "WanVSR"
-if str(WANVSR_PATH) not in sys.path:
-    sys.path.insert(0, str(WANVSR_PATH))
-
-from utils.TCDecoder import build_tcdecoder  # type: ignore  # noqa: E402
-from utils.utils import Causal_LQ4x_Proj  # type: ignore  # noqa: E402
 
 
 @dataclass
@@ -66,7 +48,7 @@ class PipelineHandle:
 class FlashVSRService:
     """FlashVSR 推理服务（单例 + 变体缓存)."""
 
-    SUPPORTED_VARIANTS: tuple[str, ...] = ("tiny", "tiny_long", "full")
+    SUPPORTED_VARIANTS: tuple[str, ...] = ("tiny_long",)
     BASE_MODEL_FILES: tuple[str, ...] = (
         "diffusion_pytorch_model_streaming_dmd.safetensors",
         "LQ_proj_in.ckpt",
@@ -107,11 +89,8 @@ class FlashVSRService:
             return base_ready and extra_ready
 
         ready_variants = {
-            "tiny": _ready(),
             "tiny_long": _ready(),
-            "full": _ready(cls.FULL_ONLY_FILES),
         }
-
         missing_files = [name for name, ok in file_status.items() if not ok]
 
         return {
@@ -335,14 +314,15 @@ class FlashVSRService:
                 return n
 
     @staticmethod
-    def _compute_scaled_dims(w0: int, h0: int, scale: float, multiple: int = 16):
+    def _compute_scaled_dims(w0: int, h0: int, scale: float, multiple: int = 128):
         """
         计算缩放后的尺寸。
 
         - 先按 scale 计算放大后的尺寸 (sW, sH)。
         - 再向下对齐到 multiple 的倍数，用于满足 FlashVSR 的块大小约束。
-        - 这里使用 multiple=16（而非 128），在保证 H/W 至少为 16 的倍数的前提下，
-          尽量减小裁剪量，避免明显改变长宽比。
+        - 这里保持与官方 FlashVSR WanVideo 模型一致，使用 multiple=128；
+          这样在 VAE 下采样 (×1/8) 和 3D patch (1,2,2) 之后，特征图尺寸依然能被
+          self-attention 的窗口 (2,8,8) 整除，避免 “Dims must divide by window size” 错误。
         """
         sW = int(round(w0 * scale))
         sH = int(round(h0 * scale))
@@ -367,7 +347,10 @@ class FlashVSRService:
     @staticmethod
     def _pil_to_tensor(img: Image.Image, dtype, device):
         """PIL 图像转 tensor."""
-        t = torch.from_numpy(np.asarray(img, np.uint8)).to(
+        # 使用显式拷贝保证 NumPy 数组是可写的，避免 PyTorch 关于
+        # "non-writable tensor" 的警告，同时保持 dtype/layout 不变。
+        arr = np.array(img, dtype=np.uint8, copy=True)
+        t = torch.from_numpy(arr).to(
             device=device, dtype=torch.float32
         )
         t = t.permute(2, 0, 1) / 255.0 * 2.0 - 1.0
@@ -431,6 +414,7 @@ class FlashVSRService:
                 frames,
                 tmp_video_only,
                 fps=fps,
+                quality=settings.FLASHVSR_EXPORT_VIDEO_QUALITY,
                 progress_callback=progress_callback,
                 total_frames=total_frames,
                 start_time=start_time,
@@ -669,14 +653,15 @@ class FlashVSRService:
         return self._pipelines[variant]
 
     def _build_pipeline_handle(self, variant: str) -> PipelineHandle:
-        """根据变体初始化 pipeline 并缓存."""
+        """根据变体初始化 pipeline 并缓存.
+
+        当前实现仅支持 tiny_long 变体。
+        """
 
         print(f"🚀 初始化 FlashVSR {settings.FLASHVSR_VERSION} pipeline ({variant})...")
         model_path = settings.FLASHVSR_MODEL_PATH
 
         needed_files = list(self.BASE_MODEL_FILES)
-        if variant == "full":
-            needed_files += list(self.FULL_ONLY_FILES)
 
         missing = [name for name in needed_files if not (model_path / name).exists()]
         if missing:
@@ -686,25 +671,18 @@ class FlashVSRService:
 
         mm = ModelManager(torch_dtype=torch.bfloat16, device="cpu")
         weights_to_load = [str(model_path / self.BASE_MODEL_FILES[0])]
-        if variant == "full":
-            weights_to_load.append(str(model_path / self.FULL_ONLY_FILES[0]))
         mm.load_models(weights_to_load)
 
         if not self.PROMPT_TENSOR_FILE.exists():
             raise FileNotFoundError(
                 "缺少 FlashVSR prompt tensor: "
-                f"{self.PROMPT_TENSOR_FILE}. 请从 third_party/FlashVSR/examples/WanVSR/prompt_tensor "
-                "复制或下载 posi_prompt.pth，详见 docs/deployment.md。"
+                f"{self.PROMPT_TENSOR_FILE}. 请将 posi_prompt.pth "
+                "放置在 models/FlashVSR-v1.1/ 下或通过 FLASHVSR_PROMPT_TENSOR_PATH 覆盖，详见 docs/deployment.md。"
             )
 
         prompt_tensor = torch.load(self.PROMPT_TENSOR_FILE, map_location="cpu")
 
-        pipeline_cls_map = {
-            "tiny": FlashVSRTinyPipeline,
-            "tiny_long": FlashVSRTinyLongPipeline,
-            "full": FlashVSRFullPipeline,
-        }
-        pipeline_cls = pipeline_cls_map[variant]
+        pipeline_cls = FlashVSRTinyLongPipeline
 
         device = self._resolve_device()
         print(f"📍 使用设备: {device}")
@@ -752,10 +730,6 @@ class FlashVSRService:
         pp_devices, pp_split = self._parse_pipeline_parallel()
 
         default_kwargs: dict[str, Any] = {}
-        if variant == "full":
-            pipe.vae.model.encoder = None
-            pipe.vae.model.conv1 = None
-            default_kwargs = {"tiled": False}
 
         pipe.to(device)
         # 启用流水线并行时，不启用 VRAM management 避免设备错配

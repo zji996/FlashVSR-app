@@ -12,26 +12,24 @@ from app.models.task import TaskStatus
 
 class TaskParameters(BaseModel):
     """任务处理参数."""
-    scale: float = Field(default=4.0, ge=1.0, le=8.0, description="超分倍数")
+    scale: float = Field(
+        default=settings.DEFAULT_SCALE,
+        ge=1.0,
+        le=8.0,
+        description="超分倍数",
+    )
     sparse_ratio: float = Field(default=2.0, ge=1.0, le=4.0, description="稀疏比率")
     local_range: int = Field(default=11, ge=7, le=15, description="局部范围")
     seed: int = Field(default=0, ge=0, description="随机种子")
-    model_variant: Literal["tiny", "tiny_long", "full"] = Field(
+    model_variant: Literal["tiny_long"] = Field(
         default=settings.DEFAULT_MODEL_VARIANT,
-        description="FlashVSR 模型变体",
+        description="FlashVSR 模型变体（仅 tiny_long）",
     )
     preprocess_width: int = Field(
         default=640,
         ge=128,
-        description="预处理缩放宽度（需为128的倍数）",
+        description="预处理缩放宽度（像素，建议常见档位如 640/768/896/960/1024/1152/1280）",
     )
-
-    @field_validator("preprocess_width")
-    @classmethod
-    def validate_multiple_of_128(cls, value: int) -> int:
-        if value % 128 != 0:
-            raise ValueError("预处理宽度必须是 128 的倍数")
-        return value
 
 
 class VideoInfo(BaseModel):
