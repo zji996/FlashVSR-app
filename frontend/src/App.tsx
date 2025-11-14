@@ -1,8 +1,9 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, NavLink } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { systemApi } from './api/system';
 import HomePage from './pages/HomePage';
 import TaskDetailPage from './pages/TaskDetailPage';
+import TasksPage from './pages/TasksPage';
 import { MODEL_VARIANT_LABELS, type SystemStatus } from './types';
 
 const numericTaskKeys: Array<keyof SystemStatus['tasks']> = [
@@ -36,50 +37,75 @@ function App() {
   });
 
   const systemStatusForDisplay = isSystemStatus(systemStatus) ? systemStatus : undefined;
+  const navLinks = [
+    { to: '/', label: '新建任务' },
+    { to: '/tasks', label: '任务列表' },
+  ];
 
   return (
     <div className="min-h-screen bg-gray-50">
       {/* 导航栏 */}
       <nav className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center">
-              <h1 className="text-2xl font-bold text-primary-600">
-                ⚡ FlashVSR
-              </h1>
-              <span className="ml-3 text-sm text-gray-500">
-                视频超分辨率处理平台
-              </span>
-            </div>
-
-            {/* 系统状态 */}
-            {systemStatusForDisplay && (
-              <div className="flex items-center gap-6 text-sm">
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`w-2 h-2 rounded-full ${
-                      systemStatusForDisplay.gpu_available ? 'bg-green-500' : 'bg-red-500'
-                    }`}
-                  />
-                  <span className="text-gray-700">
-                    {systemStatusForDisplay.gpu_available
-                      ? `GPU: ${systemStatusForDisplay.gpu_info?.name || 'Available'}`
-                      : 'GPU: 不可用'}
+          <div className="flex flex-col gap-4 py-4 md:py-0">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-6">
+                <div>
+                  <h1 className="text-2xl font-bold text-primary-600">
+                    ⚡ FlashVSR
+                  </h1>
+                  <span className="text-sm text-gray-500">
+                    视频超分辨率处理平台
                   </span>
                 </div>
-                <div className="text-gray-700">
-                  任务: {systemStatusForDisplay.tasks.processing} 处理中 /{' '}
-                  {systemStatusForDisplay.tasks.pending} 等待中
+                <div className="flex items-center gap-3 text-sm">
+                  {navLinks.map((item) => (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      className={({ isActive }) =>
+                        `inline-flex items-center rounded-full px-4 py-1.5 transition ${
+                          isActive
+                            ? 'bg-primary-600 text-white shadow-sm'
+                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`
+                      }
+                    >
+                      {item.label}
+                    </NavLink>
+                  ))}
                 </div>
-                {systemStatusForDisplay.flashvsr && (
-                  <div className="text-gray-700">
-                    FlashVSR {systemStatusForDisplay.flashvsr.version} · 默认{' '}
-                    {MODEL_VARIANT_LABELS[systemStatusForDisplay.flashvsr.default_variant]
-                      ?? systemStatusForDisplay.flashvsr.default_variant}
-                  </div>
-                )}
               </div>
-            )}
+
+              {/* 系统状态 */}
+              {systemStatusForDisplay && (
+                <div className="flex flex-col items-start text-sm text-gray-700 gap-1 md:items-end">
+                  <div className="flex items-center gap-2">
+                    <div
+                      className={`w-2 h-2 rounded-full ${
+                        systemStatusForDisplay.gpu_available ? 'bg-green-500' : 'bg-red-500'
+                      }`}
+                    />
+                    <span>
+                      {systemStatusForDisplay.gpu_available
+                        ? `GPU: ${systemStatusForDisplay.gpu_info?.name || 'Available'}`
+                        : 'GPU: 不可用'}
+                    </span>
+                  </div>
+                  <div>
+                    任务: {systemStatusForDisplay.tasks.processing} 处理中 /{' '}
+                    {systemStatusForDisplay.tasks.pending} 等待中
+                  </div>
+                  {systemStatusForDisplay.flashvsr && (
+                    <div>
+                      FlashVSR {systemStatusForDisplay.flashvsr.version} · 默认{' '}
+                      {MODEL_VARIANT_LABELS[systemStatusForDisplay.flashvsr.default_variant]
+                        ?? systemStatusForDisplay.flashvsr.default_variant}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </nav>
@@ -88,6 +114,7 @@ function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <Routes>
           <Route path="/" element={<HomePage />} />
+          <Route path="/tasks" element={<TasksPage />} />
           <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
         </Routes>
       </main>

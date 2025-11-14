@@ -60,17 +60,17 @@ export default function TaskCard({ task }: TaskCardProps) {
   const variantLabel = MODEL_VARIANT_LABELS[variantValue] ?? variantValue;
 
   return (
-    <div className="card">
-      <div className="flex justify-between items-start mb-4">
-        <div className="flex-1">
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">
+    <div className="card h-full flex flex-col">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between mb-4">
+        <div className="flex-1 min-w-0">
+          <h3 className="text-lg font-semibold text-gray-900 mb-1 break-words">
             {task.input_file_name}
           </h3>
           <div className="text-sm text-gray-500">
             创建时间: {new Date(task.created_at).toLocaleString('zh-CN')}
           </div>
         </div>
-        <div>{getStatusBadge(task.status)}</div>
+        <div className="flex-shrink-0">{getStatusBadge(task.status)}</div>
       </div>
 
       {task.status === TaskStatus.COMPLETED && (
@@ -111,7 +111,7 @@ export default function TaskCard({ task }: TaskCardProps) {
       )}
 
       {/* 参数信息 */}
-      <div className="mb-4 text-sm text-gray-600 flex flex-wrap gap-x-4 gap-y-1">
+      <div className="mb-4 text-sm text-gray-600 grid grid-cols-1 gap-y-1 sm:grid-cols-2">
         <span>模型: {variantLabel}</span>
         <span>超分倍数: {task.parameters.scale}x</span>
         <span>稀疏比率: {task.parameters.sparse_ratio}</span>
@@ -119,15 +119,15 @@ export default function TaskCard({ task }: TaskCardProps) {
       </div>
 
       {/* 操作按钮 */}
-      <div className="flex gap-3">
-        <Link to={`/tasks/${task.id}`} className="btn btn-primary flex-1">
+      <div className="mt-auto flex flex-col gap-2 sm:flex-row sm:gap-3">
+        <Link to={`/tasks/${task.id}`} className="btn btn-primary w-full">
           查看详情
         </Link>
         {task.status === TaskStatus.COMPLETED && (
           <a
             href={tasksApi.getResultUrl(task.id)}
             download
-            className="btn btn-secondary flex-1"
+            className="btn btn-secondary w-full"
           >
             下载结果
           </a>
@@ -135,7 +135,7 @@ export default function TaskCard({ task }: TaskCardProps) {
         <button
           onClick={handleDelete}
           disabled={deleteMutation.isPending}
-          className="btn btn-danger"
+          className="btn btn-danger w-full sm:w-auto"
         >
           删除
         </button>

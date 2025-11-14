@@ -1,21 +1,36 @@
 /**
- * 任务列表组件
+ * 任务列表组件（支持分页 + 状态筛选 + 自适应布局）
  */
 
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { tasksApi } from '../api/tasks';
 import { TaskStatus } from '../types';
 import TaskCard from './TaskCard';
 import { useTaskFilterStore } from '../stores/useTaskFilters';
 
+const PAGE_SIZE_OPTIONS = [6, 8, 12, 20];
+const STATUS_FILTERS: Array<{ label: string; value: TaskStatus | '' }> = [
+  { label: '全部', value: '' },
+  { label: '等待中', value: TaskStatus.PENDING },
+  { label: '处理中', value: TaskStatus.PROCESSING },
+  { label: '已完成', value: TaskStatus.COMPLETED },
+  { label: '失败', value: TaskStatus.FAILED },
+];
+
 export default function TaskList() {
-  const { page, statusFilter, setPage, setStatusFilter } = useTaskFilterStore();
+  const { page, pageSize, statusFilter, setPage, setPageSize, setStatusFilter } = useTaskFilterStore();
+  const [jumpInput, setJumpInput] = useState('');
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['tasks', page, statusFilter],
-    queryFn: () => tasksApi.getTasks(page, 20, statusFilter || undefined),
-    refetchInterval: 3000, // 每3秒刷新一次
+    queryKey: ['tasks', page, pageSize, statusFilter],
+    queryFn: () => tasksApi.getTasks(page, pageSize, statusFilter || undefined),
+    refetchInterval: 3000,
   });
+
+  useEffect(() => {
+    setJumpInput('');
+  }, [page]);
 
   if (isLoading) {
     return (
@@ -33,30 +48,72 @@ export default function TaskList() {
     );
   }
 
-  const totalPages = Math.max(1, Math.ceil((data?.total || 0) / 20));
+  const totalItems = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const rangeStart = totalItems === 0 ? 0 : (page - 1) * pageSize + 1;
+  const rangeEnd = Math.min(totalItems, page * pageSize);
+
+  const handleJumpSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!jumpInput) {
+      return;
+    }
+    const parsed = Number(jumpInput);
+    if (Number.isNaN(parsed)) {
+      return;
+    }
+    const clamped = Math.min(totalPages, Math.max(1, Math.trunc(parsed)));
+    if (clamped !== page) {
+      setPage(clamped);
+    }
+  };
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold">任务列表</h2>
-
-        {/* 状态筛选 */}
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as TaskStatus | '')}
-          className="input w-auto"
-        >
-          <option value="">全部状态</option>
-          <option value={TaskStatus.PENDING}>等待中</option>
-          <option value={TaskStatus.PROCESSING}>处理中</option>
-          <option value={TaskStatus.COMPLETED}>已完成</option>
-          <option value={TaskStatus.FAILED}>失败</option>
-        </select>
+    <div className="max-w-6xl mx-auto space-y-6 px-4 sm:px-0">
+      <div className="card">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900">任务列表</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              自动每 3 秒刷新，可按状态筛选并切换每页数量。
+            </p>
+          </div>
+          <label className="text-sm text-gray-600 flex items-center gap-2">
+            每页
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              className="input w-24"
+            >
+              {PAGE_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {STATUS_FILTERS.map((option) => {
+            const active = statusFilter === option.value;
+            return (
+              <button
+                key={option.value || 'all'}
+                type="button"
+                onClick={() => setStatusFilter(option.value)}
+                className={`rounded-full px-4 py-1.5 text-sm transition ${
+                  active ? 'bg-primary-600 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      {/* 任务列表 */}
       {data?.tasks && data.tasks.length > 0 ? (
-        <div className="space-y-4">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {data.tasks.map((task) => (
             <TaskCard key={task.id} task={task} />
           ))}
@@ -67,26 +124,59 @@ export default function TaskList() {
         </div>
       )}
 
-      {/* 分页 */}
       {totalPages > 1 && (
-        <div className="flex justify-center items-center gap-2 mt-8">
-          <button
-            onClick={() => setPage(Math.max(1, page - 1))}
-            disabled={page === 1}
-            className="btn btn-secondary"
-          >
-            上一页
-          </button>
-          <span className="text-gray-700">
-            第 {page} / {totalPages} 页
-          </span>
-          <button
-            onClick={() => setPage(Math.min(totalPages, page + 1))}
-            disabled={page === totalPages}
-            className="btn btn-secondary"
-          >
-            下一页
-          </button>
+        <div className="card flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm text-gray-500">
+            显示 {rangeStart}-{rangeEnd} / {totalItems} 条
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setPage(1)}
+              disabled={page === 1}
+              className="btn btn-secondary px-3"
+            >
+              «
+            </button>
+            <button
+              onClick={() => setPage(Math.max(1, page - 1))}
+              disabled={page === 1}
+              className="btn btn-secondary px-3"
+            >
+              上一页
+            </button>
+            <span className="text-gray-700 text-sm">
+              第 {page} / {totalPages} 页
+            </span>
+            <button
+              onClick={() => setPage(Math.min(totalPages, page + 1))}
+              disabled={page === totalPages}
+              className="btn btn-secondary px-3"
+            >
+              下一页
+            </button>
+            <button
+              onClick={() => setPage(totalPages)}
+              disabled={page === totalPages}
+              className="btn btn-secondary px-3"
+            >
+              »
+            </button>
+            <form className="flex items-center gap-2" onSubmit={handleJumpSubmit}>
+              <label className="text-sm text-gray-600 hidden sm:inline">跳至</label>
+              <input
+                type="number"
+                min="1"
+                max={totalPages}
+                value={jumpInput}
+                onChange={(e) => setJumpInput(e.target.value)}
+                placeholder="页码"
+                className="input w-20"
+              />
+              <button type="submit" className="btn btn-primary px-3">
+                Go
+              </button>
+            </form>
+          </div>
         </div>
       )}
     </div>
