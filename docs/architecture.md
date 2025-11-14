@@ -8,7 +8,7 @@ FlashVSR 应用围绕 Frontend、Backend 与 GPU 作业流三大层构建，同�
 - **Backend（`backend/`）**：FastAPI 提供 `/api/system/*` 和 `/api/tasks/*` 路由；SQLAlchemy/PostgreSQL 持久化任务与进度，Pydantic schemas（`app/schemas`）约束前端交互；配置集中在 `app/config`，数据库依赖于 `app/core/database.py`。
 - **GPU 作业流（`services/` + `tasks/`）**：上传后由 `tasks.flashvsr_task.process_video_task` 调用 FlashVSR 推理；`services.flashvsr_service` 封装 Tiny Long 变体的模型加载、GPU 显存管理与进度回调，Celery/Redis 负责调度与队列，`storage/` 持久化上传文件与结果。
 - **LQ 流式缓冲**：`services/video_streaming.py` 维护多线程 `StreamingVideoTensor`，按照 `FLASHVSR_STREAMING_PREFETCH_FRAMES` 预读、`FLASHVSR_STREAMING_DECODE_THREADS` 个 CPU 解码线程并行处理帧。设置 `FLASHVSR_STREAMING_LQ_MAX_BYTES`>0 时会一次性预锁定同容量的环形缓冲，实现 “32GB 内存顶满就滚动释放” 的策略；值为 0 时表示无限制，只阻塞等待并不写 memmap。FlashVSR 推理循环照旧在每个 8 帧窗口结束后调用 `release_until` 释放旧帧。
-- **默认模型**：`settings.DEFAULT_MODEL_VARIANT` 以及前端 `UploadForm` 默认使用 Tiny Long 版本，并且当前实现只暴露 Tiny Long 一个变体；`MODEL_VARIANTS_TO_PRELOAD` 也仅接受 `["tiny_long"]`。
+- **默认模型**：`settings.DEFAULT_MODEL_VARIANT` 以及前端 `UploadForm` 默认使用 Tiny Long，当前实现只暴露 Tiny Long 一个变体。
 
 ## 支撑设施
 

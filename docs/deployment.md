@@ -73,8 +73,7 @@
    ```
    - `.env.dev.example` 预设 `localhost` 作为 PostgreSQL / Redis 主机，适用于直接运行 `fastapi dev` 的场景。
    - 如果后续需要把后端放进 Docker Compose 全栈，可改用 `cp backend/.env.compose.example backend/.env`，该模版会把主机名切换为 `postgres`、`redis`（Compose 网络内部可解析）。
-   - `backend/.env` 中至少填 `DATABASE_URL`、`REDIS_URL`、`CELERY_BROKER_URL`、`CELERY_RESULT_BACKEND`，还可以调整 `MAX_CONCURRENT_TASKS`、`FLASHVSR_VERSION`、`DEFAULT_MODEL_VARIANT`。
-   - 可选：通过 `MODEL_VARIANTS_TO_PRELOAD`（JSON 列表）指定需要在启动时预加载的模型变体，默认只会加载 `DEFAULT_MODEL_VARIANT`。
+   - `backend/.env` 中至少填 `DATABASE_URL`、`REDIS_URL`、`CELERY_BROKER_URL`、`CELERY_RESULT_BACKEND`，还可以调整 `MAX_CONCURRENT_TASKS`、`FLASHVSR_VERSION`、`DEFAULT_MODEL_VARIANT`（当前仅 Tiny Long 生效）。
    - `frontend/.env` 中设置 `VITE_API_BASE_URL=http://localhost:8000`（或生产后端地址）。
 4. **启动依赖服务（推荐使用 Docker Compose dev）**
    ```bash
@@ -113,7 +112,6 @@
    cp backend/.env.compose.example backend/.env
    cp frontend/.env.example frontend/.env
    ```
-   - 若需要控制启动即加载的 pipeline，可在 `backend/.env` 中配置 `MODEL_VARIANTS_TO_PRELOAD`（例如 `["tiny","full"]`）。
 4. 启动堆栈：
    ```bash
    docker compose up --build
@@ -132,6 +130,31 @@
 - 数据库迁移：`uv --project backend run alembic upgrade head`
 - 后端测试：`uv --project backend run pytest`
 - 前端构建：`cd frontend && pnpm build`
+
+## 分辨率与缩放行为说明
+
+FlashVSR 应用的分辨率策略分为三个阶段：前端预处理、后端缩放与模型内部对齐。
+
+- **前端预处理宽度（preprocess_width）**
+  - 在上传表单中选择，例如 640 / 768 / 896 / 960 / 1024 / 1152 / 1280。
+  - 后端通过 FFmpeg 将输入视频缩放到该宽度，高度按原始比例自适应（`scale=<width>:-2`），仅保证为偶数。
+  - 这里不强制 128 的倍数，方便用“960 搭配 2× 超分 ≈ 1080p”这类直观选择。
+
+- **模型前缩放与 128 倍数对齐**
+  - FlashVSR（WanVideo DiT）内部自注意力窗口为 `(2, 8, 8)`，要求 VAE latent 网格维度 `(F,H,W)` 能整除窗口大小，否则会报 `Dims must divide by window size.`。
+  - 为此，后端在送入模型前会：
+    1. 先按 `scale`（默认 2.0）对预处理后的视频做超分；
+    2. 再把结果的高宽分别向下对齐到 **128 的倍数**，并做居中裁剪。
+  - 示例：预处理后为 960×540，`scale=2.0` → 理论上 1920×1080 → 实际送入模型是对齐后的 1920×1024。
+
+- **对速度和质量的影响**
+  - 计算量与分辨率面积近似成正比：从 1280 降到 960，大约是 `(960/1280)^2 ≈ 0.56`，推理速度能明显提升。
+  - 高宽对齐到 128 倍数只在边缘裁掉少量像素（如 1080→1024），视觉上差异很小。
+  - 在同一素材上，从 960 提高到 1024/1152 更多是增加细节恢复潜力与耗时，肉眼差异相对细微，建议按“性能预算 + 目标分辨率”选择常用档位。
+
+**推荐组合：**
+- 日常场景、接近 1080p 且兼顾速度：`preprocess_width = 960`，`scale = 2.0`。
+- 追求更高分辨率（接近 2K/1440p）：`preprocess_width = 1152` 或 `1280` 搭配 2× 或 4× 超分，模型侧仍会自动对齐到最近的 128 倍数。
 
 ## 多 GPU 并行（两张 3080 20GB 示例）
 

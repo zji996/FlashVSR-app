@@ -85,7 +85,6 @@ class Settings(BaseSettings):
     DEFAULT_LOCAL_RANGE: int = 11
     DEFAULT_SEED: int = 0
     DEFAULT_MODEL_VARIANT: str = "tiny_long"
-    MODEL_VARIANTS_TO_PRELOAD: list[str] = []
 
     # CORS配置
     BACKEND_CORS_ORIGINS: list[str] = ["*"]

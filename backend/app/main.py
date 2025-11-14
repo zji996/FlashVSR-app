@@ -17,9 +17,7 @@ async def lifespan(app: FastAPI):
 
     # 预加载 FlashVSR 模型，避免首个任务时再初始化
     flashvsr_service = FlashVSRService()
-    preload_variants = settings.MODEL_VARIANTS_TO_PRELOAD or [settings.DEFAULT_MODEL_VARIANT]
-    for variant in dict.fromkeys(preload_variants):  # preserve order, drop duplicates
-        flashvsr_service.preload_variant(variant)
+    flashvsr_service.preload_variant(settings.DEFAULT_MODEL_VARIANT)
 
     yield
     # 关闭时的清理工作

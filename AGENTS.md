@@ -29,7 +29,7 @@ Write imperative, scope-aware commits (`backend: improve job progress polling`) 
 
 ## Environment & Ops Notes
 Copy `.env.example` into each service and keep secrets outside git. Place FlashVSR weights in `models/`, keep `storage/` writable or mounted under Docker, install NVIDIA Container Toolkit before `docker compose up`, and prefer symlinks inside `storage/` for large datasets.
-- FlashVSR 的默认模型变体/前端默认选项均已切换为 Tiny Long；如需复用 Tiny 或 Full，请在 `backend/.env` 的 `DEFAULT_MODEL_VARIANT` / `MODEL_VARIANTS_TO_PRELOAD`（以及前端选择器）中显式调整。
+- FlashVSR 的默认模型变体/前端默认选项均为 Tiny Long，当前实现只支持该变体；如需恢复 Tiny 或 Full，必须显式修改 `backend/.env` 的 `DEFAULT_MODEL_VARIANT` 并同步更新前端。
 - `FLASHVSR_STREAMING_LQ_MAX_BYTES`（默认 0 表示不限）+ `FLASHVSR_STREAMING_PREFETCH_FRAMES` 控制纯内存 LQ 流式缓冲：后台线程按预读阈值（至少 8n+1 帧）填充，推理线程在每个 8 帧窗口结束后调用 `release_until` 即刻释放旧帧，全程不写 `*.memmap`。想让小视频一次性载入 CPU，可把该阈值调成更大的值，例如 `64GB`。
 - 输出帧数超过 `FLASHVSR_CHUNKED_SAVE_MIN_FRAMES` 时，会按 `FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE` 帧拆分写入 `backend/storage/tmp/chunks_*`，异步落盘后使用 FFmpeg concat 合并；把阈值设为 0 即可恢复一次性写文件。
 - 上传 `.ts`/`.m2ts`/`.mts`/其他非常见后缀会统一用 FFmpeg 重新编码为 MP4 确保 imageio/FlashVSR 可读；并始终按 `preprocess_width` 执行缩放（`scale=<width>:-2`）。

@@ -18,7 +18,7 @@ export const ModelVariant = {
 export type ModelVariant = (typeof ModelVariant)[keyof typeof ModelVariant];
 
 export const MODEL_VARIANT_LABELS: Record<ModelVariant, string> = {
-  [ModelVariant.TINY_LONG]: 'Tiny Long',
+  [ModelVariant.TINY_LONG]: '默认模型',
 };
 
 export interface TaskParameters {

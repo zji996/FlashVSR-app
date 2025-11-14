@@ -1,6 +1,5 @@
 """任务管理API路由."""
 
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -22,7 +21,6 @@ from app.schemas.task import (
 )
 from app.tasks.flashvsr_task import process_video_task
 from app.config import settings
-from app.services.video_metadata import VideoMetadataService
 
 router = APIRouter()
 
@@ -46,6 +44,8 @@ async def create_task(
     - **local_range**: 局部范围 (7-15)
     - **seed**: 随机种子（当前仅 Tiny Long 变体，前端无需选择模型）
     - **preprocess_width**: 预处理目标宽度（像素，建议 640-1280 常见档位）
+
+    注：接口会在文件写入并排队 Celery 后立即返回，详细的元信息由后台任务填充。
     """
     # 验证文件类型
     if not file.filename:
@@ -101,16 +101,6 @@ async def create_task(
     finally:
         await file.close()
 
-    # 提取视频元数据
-    try:
-        metadata = VideoMetadataService.extract_metadata(upload_path)
-    except Exception as e:
-        if upload_path.exists():
-            upload_path.unlink()
-        raise HTTPException(status_code=400, detail=f"视频解析失败: {str(e)}") from e
-    
-    video_info = metadata.to_dict()
-    
     # 创建任务记录
     try:
         parameters = TaskParameters(
@@ -129,8 +119,10 @@ async def create_task(
         input_file_name=original_name,
         parameters=parameters.model_dump(),
         status=TaskStatus.PENDING,
-        video_info=video_info,
-        total_frames=metadata.total_frames,
+        video_info={
+            "preprocess_width": preprocess_width,
+        },
+        total_frames=None,
     )
     
     db.add(task)
