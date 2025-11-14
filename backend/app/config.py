@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     )
     FLASHVSR_CACHE_OFFLOAD: str = "auto"  # auto | cpu | none
     FLASHVSR_CACHE_OFFLOAD_AUTO_THRESHOLD_GB: float = 24.0
+    # 可选：指定设备，例如 "cuda", "cuda:0", "cuda:1"，为空则自动选择
+    FLASHVSR_DEVICE: str = ""
+    # 流水线并行配置：逗号分隔设备列表，例如 "cuda:0,cuda:1" 或 "0,1"；为空表示关闭
+    FLASHVSR_PP_DEVICES: str = ""
+    # 流水线并行的分割层（以 block 索引计，包含左侧）。为空或 "auto" 则在中间切分
+    FLASHVSR_PP_SPLIT_BLOCK: str = "auto"
+    # 是否在单视频上启用两段流水线的窗口级重叠（Stage0(t+1) 与 Stage1(t) 并行）
+    FLASHVSR_PP_OVERLAP: bool = False
     FLASHVSR_STREAMING_LQ_MAX_BYTES: int = 0
     FLASHVSR_STREAMING_PREFETCH_FRAMES: int = 25
     FLASHVSR_STREAMING_DECODE_THREADS: int = 2
@@ -74,7 +82,7 @@ class Settings(BaseSettings):
     # 任务配置
     MAX_CONCURRENT_TASKS: int = 1  # GPU限制
     TASK_RETENTION_DAYS: int = 30
-    DEFAULT_SCALE: float = 4.0
+    DEFAULT_SCALE: float = 2.0
     DEFAULT_SPARSE_RATIO: float = 2.0
     DEFAULT_LOCAL_RANGE: int = 11
     DEFAULT_SEED: int = 0

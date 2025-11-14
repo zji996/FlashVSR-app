@@ -101,6 +101,103 @@
 - 后端测试：`uv --project backend run pytest`
 - 前端构建：`cd frontend && pnpm build`
 
+## 多 GPU 并行（两张 3080 20GB 示例）
+
+FlashVSR 最简单、最稳妥的多 GPU 方案是“任务级并行”：为每张 GPU 启动一个 Celery worker，每个 worker 只见到且只使用一张卡。这样两个视频任务可并行运行；若只有一个任务，也可以在队列中同时提交多个任务以占满两张卡。
+
+- 代码层支持：后端新增了 `FLASHVSR_DEVICE` 配置（可设为空、`cpu`、`cuda`、`cuda:0`、`cuda:1`）。为空时自动选择；设置成 `cuda` 时使用当前可见的 GPU（配合 `CUDA_VISIBLE_DEVICES` 即可把“本地 1 号卡”映射为容器/进程里的 `cuda:0`）。
+
+### 本机（非 Docker）
+
+在两个终端分别启动各自绑定的 worker（确保已激活 `backend/.venv`）：
+
+```bash
+# GPU0
+CUDA_VISIBLE_DEVICES=0 FLASHVSR_DEVICE=cuda \
+  celery -A app.core.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=1
+
+# GPU1（另一个终端）
+CUDA_VISIBLE_DEVICES=1 FLASHVSR_DEVICE=cuda \
+  celery -A app.core.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=1
+```
+
+说明：将 `FLASHVSR_DEVICE` 设为 `cuda`，并用 `CUDA_VISIBLE_DEVICES` 把“物理 1 号卡/2 号卡”分别映射为进程视角下的 `cuda:0`，后端会自动识别并在日志里打印实际 GPU 名称。
+
+### Docker Compose
+
+把 `celery-worker` 服务复制两份，分别限定到 `device_ids: ["0"]` 与 `device_ids: ["1"]`，并设置 `CUDA_VISIBLE_DEVICES`：
+
+```yaml
+  celery-worker-0:
+    extends: celery-worker
+    container_name: flashvsr-celery-0
+    environment:
+      CUDA_VISIBLE_DEVICES: "0"
+      FLASHVSR_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+
+  celery-worker-1:
+    extends: celery-worker
+    container_name: flashvsr-celery-1
+    environment:
+      CUDA_VISIBLE_DEVICES: "1"
+      FLASHVSR_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+```
+
+注意：若保留原有的 `celery-worker`，可能会多启动一个 worker；通常建议仅启用上述两项或将原服务注释掉。
+
+### 单视频的跨 GPU 并行（可选、高阶）
+
+已添加“流水线并行（pipeline parallel）”的轻量支持，用于把 DiT Blocks 拆分到两张卡：
+
+- 环境变量：
+  - `FLASHVSR_PP_DEVICES`：逗号分隔设备列表，例如 `cuda:0,cuda:1` 或 `0,1`（为空表示关闭）。
+  - `FLASHVSR_PP_SPLIT_BLOCK`：切分点（block 索引，以左闭右开，默认 `auto` 表示居中切分）。
+- 行为：
+  - `patch_embedding` 与前半段 blocks 放在第一个设备；后半段 blocks 与 `head` 放在最后一个设备。
+  - 推理时在切分点把中间激活（和 RoPE 频率表、时间调制张量）搬迁到下一个设备。
+  - Cross-Attn 的持久 KV 缓存在启用后会迁移到各自 block 所在设备。
+  - 为避免设备错配，开启流水线并行时会自动禁用 VRAM management（按需上/下载）。
+
+示例（两张 3080）
+
+```bash
+# 本机
+export FLASHVSR_PP_DEVICES="0,1"        # 等价于 cuda:0,cuda:1
+export FLASHVSR_PP_SPLIT_BLOCK=auto      # 或者具体层号，比如 19
+
+# Compose 可将上述项写入 backend/.env
+```
+
+注意：默认的流水线并行以“分段驻留”为主，若想对单个长视频提速，可开启窗口级重叠（Stage0(t+1) 与 Stage1(t) 并行）：
+
+- 额外开关：`FLASHVSR_PP_OVERLAP=1`
+- 加速原理：在第 0 块设备上启动下一窗口的前半段计算（Stage0），同时第 1 块设备完成上一窗口的后半段（Stage1）。
+- 适用前提：建议 `FLASHVSR_PP_DEVICES=0,1` 且足够 PCIe 带宽（无 NVLink 也可，已尽量减少跨卡搬运；RoPE/time‑mod 每窗各搬一次、激活跨卡仅一次）。
+
+示例：
+
+```bash
+export FLASHVSR_PP_DEVICES="0,1"
+export FLASHVSR_PP_SPLIT_BLOCK=auto
+export FLASHVSR_PP_OVERLAP=1
+```
+
+若启用后希望与单卡保持一致的画质，重叠调度保持数学等价，仅调度与数据搬迁方式不同；如需最大吞吐仍建议结合“任务级并行”。
+
 ## 备注
 
 - 确保 `backend/storage` 与 `backend/models` 在 `.gitignore` 中不会被提交，且 Docker volume 挂载保持一致。

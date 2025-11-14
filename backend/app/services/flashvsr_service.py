@@ -335,8 +335,15 @@ class FlashVSRService:
                 return n
 
     @staticmethod
-    def _compute_scaled_dims(w0: int, h0: int, scale: float, multiple: int = 128):
-        """计算缩放后的尺寸."""
+    def _compute_scaled_dims(w0: int, h0: int, scale: float, multiple: int = 16):
+        """
+        计算缩放后的尺寸。
+
+        - 先按 scale 计算放大后的尺寸 (sW, sH)。
+        - 再向下对齐到 multiple 的倍数，用于满足 FlashVSR 的块大小约束。
+        - 这里使用 multiple=16（而非 128），在保证 H/W 至少为 16 的倍数的前提下，
+          尽量减小裁剪量，避免明显改变长宽比。
+        """
         sW = int(round(w0 * scale))
         sH = int(round(h0 * scale))
 
@@ -699,10 +706,19 @@ class FlashVSRService:
         }
         pipeline_cls = pipeline_cls_map[variant]
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = self._resolve_device()
         print(f"📍 使用设备: {device}")
-        if device == "cuda":
-            print(f"🎮 GPU: {torch.cuda.get_device_name(0)}")
+        if device.startswith("cuda"):
+            gpu_index = 0
+            try:
+                if ":" in device:
+                    gpu_index = int(device.split(":", 1)[1])
+            except Exception:
+                gpu_index = 0
+            try:
+                print(f"🎮 GPU: {torch.cuda.get_device_name(gpu_index)}")
+            except Exception:
+                pass
 
         pipe = pipeline_cls.from_model_manager(mm, device=device)
 
@@ -732,6 +748,9 @@ class FlashVSRService:
             strict=False,
         )
 
+        # 可选：流水线并行（多 GPU）
+        pp_devices, pp_split = self._parse_pipeline_parallel()
+
         default_kwargs: dict[str, Any] = {}
         if variant == "full":
             pipe.vae.model.encoder = None
@@ -739,9 +758,34 @@ class FlashVSRService:
             default_kwargs = {"tiled": False}
 
         pipe.to(device)
-        pipe.enable_vram_management(num_persistent_param_in_dit=None)
+        # 启用流水线并行时，不启用 VRAM management 避免设备错配
+        if pp_devices is None:
+            pipe.enable_vram_management(num_persistent_param_in_dit=None)
         pipe.init_cross_kv(context_tensor=prompt_tensor)
         pipe.load_models_to_device(["dit", "vae"])
+
+        # 初始化流水线并行（需要在 init_cross_kv 之后，把 cross-attn 缓存也迁移）
+        if pp_devices is not None and hasattr(pipe, "enable_pipeline_parallel"):
+            try:
+                pipe.enable_pipeline_parallel(pp_devices, split_index=pp_split)
+                print(f"🔀 Pipeline parallel enabled on {pp_devices} (split @ block {pp_split if pp_split is not None else 'auto'})")
+            except Exception as e:
+                print(f"⚠️ 启用流水线并行失败：{e}")
+            # When PP is enabled, move TCDecoder to the last stage device to free GPU0 for Stage0
+            try:
+                dev1 = pp_devices[-1]
+                if hasattr(pipe, "TCDecoder") and pipe.TCDecoder is not None:
+                    pipe.TCDecoder.to(dev1)
+                    print(f"🎯 TCDecoder moved to {dev1} for overlap")
+            except Exception as e:
+                print(f"⚠️ TCDecoder 迁移到 {pp_devices[-1]} 失败：{e}")
+        # Overlap scheduling for single video (optional)
+        try:
+            if getattr(settings, "FLASHVSR_PP_OVERLAP", False) and hasattr(pipe, "enable_pipeline_overlap"):
+                pipe.enable_pipeline_overlap(True)
+                print("⏩ Pipeline overlap (Stage0/Stage1) enabled per window")
+        except Exception as e:
+            print(f"⚠️ 启用流水线重叠失败：{e}")
 
         print(f"✅ FlashVSR pipeline ({variant}) 初始化完成")
         return PipelineHandle(
@@ -775,10 +819,17 @@ class FlashVSRService:
                 f"无效的 FLASHVSR_CACHE_OFFLOAD 配置: {settings.FLASHVSR_CACHE_OFFLOAD}. "
                 f"可选值: {', '.join(sorted(allowed))}"
             )
-        if device != "cuda":
+        if not device.startswith("cuda"):
             return None, None
 
-        total_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        # Query the correct GPU properties if a specific index is requested
+        gpu_index = 0
+        try:
+            if ":" in device:
+                gpu_index = int(device.split(":", 1)[1])
+        except Exception:
+            gpu_index = 0
+        total_gb = torch.cuda.get_device_properties(gpu_index).total_memory / (1024 ** 3)
         threshold = settings.FLASHVSR_CACHE_OFFLOAD_AUTO_THRESHOLD_GB
 
         if mode == "cpu":
@@ -789,3 +840,54 @@ class FlashVSRService:
                 f"auto: GPU {total_gb:.1f} GB ≤ {threshold:.1f} GB",
             )
         return None, None
+
+    def _resolve_device(self) -> str:
+        """Resolve target torch device from settings and availability."""
+        override = (settings.FLASHVSR_DEVICE or "").strip()
+        if override:
+            if override.startswith("cuda"):
+                if torch.cuda.is_available():
+                    # Optionally set current device if index provided
+                    try:
+                        if ":" in override:
+                            idx = int(override.split(":", 1)[1])
+                            torch.cuda.set_device(idx)
+                    except Exception:
+                        pass
+                    return override
+                return "cpu"
+            if override == "cpu":
+                return "cpu"
+        return "cuda" if torch.cuda.is_available() else "cpu"
+
+    def _parse_pipeline_parallel(self) -> tuple[Optional[list[str]], Optional[int]]:
+        """Parse pipeline-parallel settings from env Settings.
+        Returns (devices, split_index) or (None, None) if disabled.
+        """
+        raw = (settings.FLASHVSR_PP_DEVICES or "").strip()
+        if not raw:
+            return None, None
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        devices: list[str] = []
+        for p in parts:
+            if p.startswith("cuda"):
+                devices.append(p)
+            elif p.isdigit():
+                devices.append(f"cuda:{p}")
+            else:
+                # fallback: accept 'cpu' or unknown
+                devices.append(p)
+        # Need at least 2 devices
+        if len(devices) < 2:
+            return None, None
+
+        split_raw = (settings.FLASHVSR_PP_SPLIT_BLOCK or "auto").strip().lower()
+        split_index: Optional[int]
+        if split_raw in ("", "auto"):
+            split_index = None
+        else:
+            try:
+                split_index = int(split_raw)
+            except Exception:
+                split_index = None
+        return devices, split_index
