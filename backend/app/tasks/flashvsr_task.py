@@ -70,7 +70,8 @@ def process_video_task(self, task_id: str):
         )
         effective_metadata = preprocess_result.metadata
         processing_input_path = str(preprocess_result.input_path)
-        audio_path = str(preprocess_result.audio_path) if preprocess_result.audio_path else None
+        preprocessed_audio_path = preprocess_result.audio_path
+        audio_path = str(preprocessed_audio_path) if preprocessed_audio_path else None
 
         predicted_width = None
         predicted_height = None
@@ -145,6 +146,7 @@ def process_video_task(self, task_id: str):
         finally:
             if preprocess_result.applied:
                 preprocessor.cleanup(preprocess_result.input_path)
+            preprocessor.cleanup(preprocessed_audio_path)
         
         # 更新任务状态为完成
         task.status = TaskStatus.COMPLETED

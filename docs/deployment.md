@@ -239,6 +239,7 @@ export FLASHVSR_PP_OVERLAP=1
   - 实际调参可以按“目标分辨率 + 工作集帧数”估算：单帧占用近似为 `H * W * 3 * 2 bytes`（bfloat16），工作集可取 `32~64` 帧。例如 2×1080p（模型侧约 1920×1024）时，64 帧约 0.8 GiB，因此设置为 `1GB`~`2GB` 已足够；更高分辨率或希望更充足的预读再相应增大。
   - 若希望小视频一次载入 CPU 内存，可将该值设得更大（如 `32GB` 或 `64GB`）；若机器内存紧张则可以下调至 `1GB`~`2GB`，对推理速度影响有限。
 - `FLASHVSR_CHUNKED_SAVE_MIN_FRAMES` / `FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE` 控制输出分片写入：当帧数超过阈值时，Celery 会把超分结果按固定帧数拆成多个 `backend/storage/tmp/chunks_*/*.mp4`，由后台进程写盘，最后再用 `ffmpeg -f concat` 合并生成最终文件。设为 0 可恢复一次性写入。
+- 若推理过程中任务失败或被取消，系统会把已经写盘的分片自动合并成 `<输出文件名>_partial.mp4` 并保存在结果目录，同时在错误信息中提示路径，便于用户取走已完成的部分视频。
 - `FLASHVSR_EXPORT_VIDEO_QUALITY` 控制最终结果视频在导出阶段的编码质量（整数 1–10，默认 6，数值越大质量越高、码率与文件体积越大）。该参数同时作用于普通导出与分片写盘两条路径，编码本身在 CPU 上完成，不额外占用 GPU 算力。
 - 需要在 GPU 推理前先做一次 FFmpeg 采样时，可在 `backend/.env` 中设置以下变量：
   - `FFMPEG_BINARY`/`FFPROBE_BINARY`（可执行路径）
@@ -246,6 +247,6 @@ export FLASHVSR_PP_OVERLAP=1
   - `PREPROCESS_FFMPEG_VIDEO_CODEC` 选择编码器（`libx264|h264_nvenc|libx265|hevc_nvenc`）。设置为 `h264_nvenc` 或 `hevc_nvenc` 将启用 NVENC，失败时自动回落到 CPU 编码
   - `PREPROCESS_FFMPEG_HWACCEL` 可选填写 `cuda` 开启硬件解码
   - `PREPROCESS_NVENC_PRESET`（`p1`..`p7`）、`PREPROCESS_NVENC_RC`（`vbr_hq` 等）、`PREPROCESS_NVENC_CQ`（默认 21）
-  前端会把“预处理策略 + 目标宽度（像素）”下发给后端：`always` 表示统一执行 `ffmpeg -vf scale=<width>:-2`，常见宽度如 640/768/896/960/1024/1152/1280。无论选择何种策略，上传 `.ts/.m2ts/.mts` 等非常见容器时后端都会自动用 FFmpeg 重新编码为 MP4 并统一像素格式为 `yuv420p`，随后沿用纯内存流式缓冲流程，并在任务结束后自动清理。
+前端会把“预处理策略 + 目标宽度（像素）”下发给后端：`always` 表示统一执行 `ffmpeg -vf scale=<width>:-2`，常见宽度如 640/768/896/960/1024/1152/1280。无论选择何种策略，上传 `.ts/.m2ts/.mts` 等非常见容器时后端都会自动用 FFmpeg 重新编码为 MP4 并统一像素格式为 `yuv420p`，随后沿用纯内存流式缓冲流程，并在任务结束后自动清理（包括 `pre_*.mp4` 与 `pre_audio_*.m4a` 等临时文件，避免填满 `backend/storage/tmp`）。
 - Celery worker 默认并发 1，可通过 `MAX_CONCURRENT_TASKS` + Redis 锁扩展。
 - 前端在生产中由 Nginx 代理 `/api` 到后端，因此无需在 `frontend/.env` 中硬编码 `VITE_API_BASE_URL`（除非使用独立部署）。

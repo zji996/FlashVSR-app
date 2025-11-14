@@ -171,12 +171,26 @@ class FlashVSRService:
             pipeline_kwargs["frame_chunk_handler"] = chunk_session.handle_chunk
 
         cleanup_handle = video_tensor if hasattr(video_tensor, "cleanup") else None
+        partial_output_path: Optional[str] = None
         try:
             with torch.inference_mode():
                 output_video = pipeline(**pipeline_kwargs)
-        except Exception:
+        except Exception as exc:
             if chunk_session:
-                chunk_session.abort()
+                try:
+                    partial_path = chunk_session.finalize_partial()
+                except Exception:
+                    chunk_session.abort()
+                    raise
+                if partial_path:
+                    partial_output_path = str(partial_path)
+                else:
+                    chunk_session.abort()
+            if partial_output_path:
+                print(f"⚠️ 已导出部分结果: {partial_output_path}")
+                raise RuntimeError(
+                    f"{exc}（已导出部分结果: {partial_output_path}）"
+                ) from exc
             raise
         finally:
             if cleanup_handle is not None:

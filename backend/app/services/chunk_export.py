@@ -131,6 +131,9 @@ class ChunkedExportSession:
             base_name=Path(output_path).stem,
         )
         self._closed = False
+        self._partial_path = Path(output_path).with_name(
+            f"{Path(output_path).stem}_partial{Path(output_path).suffix}"
+        )
 
     def handle_chunk(self, tensor_chunk: torch.Tensor) -> None:
         if tensor_chunk is None or tensor_chunk.shape[2] == 0:
@@ -167,6 +170,37 @@ class ChunkedExportSession:
         self._service._cleanup_chunk_artifacts(self.chunk_paths)
         self._closed = True
         self._buffer.clear()
+        self.chunk_paths.clear()
+
+    def finalize_partial(self) -> Optional[Path]:
+        """尝试输出已完成的部分结果."""
+        if self._closed:
+            return None
+        has_data = self.processed > 0 or bool(self._buffer) or bool(self.chunk_paths)
+        if not has_data:
+            return None
+        self._flush_buffer()
+        try:
+            self.writer.finish()
+        except Exception:
+            self._service._cleanup_chunk_artifacts(self.chunk_paths)
+            self._buffer.clear()
+            self.chunk_paths.clear()
+            self._closed = True
+            raise
+        partial_path = self._partial_path
+        try:
+            self._service._merge_video_chunks(self.chunk_paths, str(partial_path), audio_path=self.audio_path)
+        except Exception:
+            self._service._cleanup_chunk_artifacts(self.chunk_paths)
+            self._buffer.clear()
+            self.chunk_paths.clear()
+            self._closed = True
+            raise
+        self._buffer.clear()
+        self.chunk_paths.clear()
+        self._closed = True
+        return partial_path
 
     def _drain_buffer(self) -> None:
         if self.chunk_size <= 0:
