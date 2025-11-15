@@ -697,6 +697,9 @@ class FlashVSRService:
 
         # 延迟导入 FlashVSR 相关依赖，避免在仅使用辅助方法或系统状态查询时就触发重型模型加载。
         from app.flashvsr_core import FlashVSRTinyLongPipeline, ModelManager
+        from app.flashvsr_core.diffsynth.models.downloader import (
+            download_customized_models,
+        )
         from app.flashvsr_core.wan_utils import build_tcdecoder, Causal_LQ4x_Proj
 
         print(f"🚀 初始化 FlashVSR {settings.FLASHVSR_VERSION} pipeline ({variant})...")
@@ -705,11 +708,50 @@ class FlashVSRService:
         needed_files = list(self.BASE_MODEL_FILES)
 
         missing = [name for name in needed_files if not (model_path / name).exists()]
-        if missing:
-            raise FileNotFoundError(
-                "缺少 FlashVSR 权重文件: " + ", ".join(missing) + f" (根目录: {model_path})"
-            )
+        prompt_missing = not self.PROMPT_TENSOR_FILE.exists()
 
+        if missing or prompt_missing:
+            missing_desc = ", ".join(missing + (["posi_prompt.pth"] if prompt_missing else []))
+            print(
+                f"⚠️ 检测到缺少 FlashVSR 权重文件: {missing_desc} (根目录: {model_path})，"
+                "尝试从 ModelScope 仓库 `kuohao/FlashVSR-v1.1` 自动下载..."
+            )
+            try:
+                # 仅下载缺失部分，避免重复拉取已存在的文件。
+                for filename in missing:
+                    download_customized_models(
+                        "kuohao/FlashVSR-v1.1",
+                        filename,
+                        str(model_path),
+                        downloading_priority=["ModelScope", "HuggingFace"],
+                    )
+                if prompt_missing:
+                    download_customized_models(
+                        "kuohao/FlashVSR-v1.1",
+                        "posi_prompt.pth",
+                        str(model_path),
+                        downloading_priority=["ModelScope", "HuggingFace"],
+                    )
+            except Exception as exc:  # pragma: no cover - 网络/依赖错误路径
+                raise FileNotFoundError(
+                    "缺少 FlashVSR 权重文件，且从 ModelScope 自动下载失败，请检查网络或手动放置权重到 "
+                    f"{model_path}。原始错误: {exc}"
+                ) from exc
+
+            # 自动下载后重新检查一次，确保所有必需文件均已就绪。
+            missing = [name for name in needed_files if not (model_path / name).exists()]
+            prompt_missing = not self.PROMPT_TENSOR_FILE.exists()
+            if missing or prompt_missing:
+                missing_desc = ", ".join(
+                    missing + (["posi_prompt.pth"] if prompt_missing else [])
+                )
+                raise FileNotFoundError(
+                    "从 ModelScope 自动下载后仍缺少 FlashVSR 权重文件: "
+                    + missing_desc
+                    + f" (根目录: {model_path})，请手动下载或检查路径配置。"
+                )
+
+        # 到这里权重文件已存在，本地加载模型即可。
         mm = ModelManager(torch_dtype=torch.bfloat16, device="cpu")
         weights_to_load = [str(model_path / self.BASE_MODEL_FILES[0])]
         mm.load_models(weights_to_load)

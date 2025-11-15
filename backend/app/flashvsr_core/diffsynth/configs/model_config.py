@@ -38,13 +38,49 @@ patch_model_loader_configs: list = []
 # -----------------------------
 
 Preset_model_id: TypeAlias = Literal[
-    # WanVideo / FlashVSR presets (placeholder; backend does not call download_models)
+    # WanVideo / FlashVSR presets
     "FlashVSR-1.1-Tiny-Long",
     "FlashVSR-1.1-Tiny-Long-Streaming",
     "FlashVSR-1.1-Tiny",
     "FlashVSR-1.1-Full",
 ]
 
-# Downloader expects these dicts to exist; keep them empty to avoid unused downloads.
+# Downloader uses these dicts to resolve preset ids into concrete files.
+# Currently we only wire `FlashVSR-1.1-Tiny-Long` to the public ModelScope repo
+# `kuohao/FlashVSR-v1.1`; other ids remain empty for future extensions.
 preset_models_on_huggingface: dict[Preset_model_id, object] = {}
-preset_models_on_modelscope: dict[Preset_model_id, object] = {}
+preset_models_on_modelscope: dict[Preset_model_id, object] = {
+    "FlashVSR-1.1-Tiny-Long": {
+        "file_list": [
+            (
+                "kuohao/FlashVSR-v1.1",
+                "diffusion_pytorch_model_streaming_dmd.safetensors",
+                "models/FlashVSR-v1.1",
+            ),
+            (
+                "kuohao/FlashVSR-v1.1",
+                "LQ_proj_in.ckpt",
+                "models/FlashVSR-v1.1",
+            ),
+            (
+                "kuohao/FlashVSR-v1.1",
+                "TCDecoder.ckpt",
+                "models/FlashVSR-v1.1",
+            ),
+            (
+                "kuohao/FlashVSR-v1.1",
+                "Wan2.1_VAE.pth",
+                "models/FlashVSR-v1.1",
+            ),
+            (
+                "kuohao/FlashVSR-v1.1",
+                "posi_prompt.pth",
+                "models/FlashVSR-v1.1",
+            ),
+        ],
+        # ModelManager will load from these paths after download_models() returns.
+        "load_path": [
+            "models/FlashVSR-v1.1/diffusion_pytorch_model_streaming_dmd.safetensors",
+        ],
+    },
+}

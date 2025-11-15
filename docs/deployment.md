@@ -25,16 +25,42 @@
      - 如仍遇到 OOM，可进一步下调上述数值至 2 或 1。
    - 如果提示 `The detected CUDA version ... mismatches ... torch.version.cuda`，需安装与当前 PyTorch (`torch.version.cuda` 显示的版本) 一致的 CUDA Toolkit，或改用匹配版本的 PyTorch wheel。
 2. **准备模型权重**
-   默认约定权重放在 `backend/models/FlashVSR-v1.1`，但权重文件本身不会随仓库分发，需要你自行下载或从私有存储同步。至少需要：
+
+   默认约定 Tiny Long 权重放在 `backend/models/FlashVSR-v1.1`，所需文件为：
+
    - `diffusion_pytorch_model_streaming_dmd.safetensors`
    - `LQ_proj_in.ckpt`
    - `TCDecoder.ckpt`
-   - `Wan2.1_VAE.pth`（当前仅 Tiny Long 会使用其中部分模块）
-   - `posi_prompt.pth`（prompt tensor）
+   - `Wan2.1_VAE.pth`
+   - `posi_prompt.pth`
 
-   典型布局如下：
+   当前仓库内置了对 ModelScope 上公开模型的自动下载支持：
+
+   - 模型仓库：`kuohao/FlashVSR-v1.1`  
+   - 依赖：`modelscope`（已在 `backend` 的依赖中声明）
+
+   - **全自动模式（推荐）**：当首次真正初始化 FlashVSR pipeline 时（第一次收到超分任务），后端会检测本地是否存在上述权重；如果缺失，会在日志中打印提示，并自动从 ModelScope 仓库 `kuohao/FlashVSR-v1.1` 下载到 `backend/models/FlashVSR-v1.1`。前提是部署环境能访问外网且已安装 `modelscope`。
+
+   - **显式预下载（可选）**：如果你想在正式服务前就把权重拉好，可以手动触发一次下载（推荐在项目根目录执行）：
+
    ```bash
-   mkdir -p backend/models/FlashVSR-v1.1
+   cd backend
+   uv run python - << 'PY'
+   from app.flashvsr_core import ModelManager
+
+   # 通过预设 id 从 ModelScope 下载 Tiny Long 权重到 backend/models/FlashVSR-v1.1
+   mm = ModelManager(
+       torch_dtype="bf16",
+       device="cpu",
+       model_id_list=["FlashVSR-1.1-Tiny-Long"],
+   )
+   print("Downloaded models:", mm.model_name)
+   PY
+   ```
+
+   下载完成后，目录结构类似：
+
+   ```bash
    ls backend/models/FlashVSR-v1.1
    # diffusion_pytorch_model_streaming_dmd.safetensors
    # LQ_proj_in.ckpt
@@ -43,28 +69,19 @@
    # posi_prompt.pth
    ```
 
-   你可以根据自己的分发方式选择其一：
+   如需复用已有权重（而不是从 ModelScope 下载），只需把上述文件放到同一目录即可，例如：
 
-   - 使用外部权重仓库（推荐）：在 Hugging Face / GitHub Releases / 内部对象存储中维护一份 FlashVSR v1.1 权重，然后在部署机器上拉取到 `backend/models/FlashVSR-v1.1`。例如：
-     ```bash
-     mkdir -p backend/models/FlashVSR-v1.1
-     cd backend/models/FlashVSR-v1.1
-     # 伪代码：按实际地址替换 YOUR_ENDPOINT
-     aria2c -x 4 -s 4 -o diffusion_pytorch_model_streaming_dmd.safetensors https://YOUR_ENDPOINT/diffusion_pytorch_model_streaming_dmd.safetensors
-     # 其余文件同理
-     ```
-   - 复用已有 FlashVSR 仓库中的权重：如果你在 `third_party/FlashVSR` 或其他路径下已有完整权重，可用软链接或拷贝的方式同步（注意不要把大文件直接提交到当前 Git 仓库）：
-     ```bash
-     mkdir -p backend/models/FlashVSR-v1.1
-     ln -s /path/to/your/FlashVSR-v1.1/* backend/models/FlashVSR-v1.1/
-     # 或者 cp -n /path/to/your/FlashVSR-v1.1/* backend/models/FlashVSR-v1.1/
-     ```
+   ```bash
+   mkdir -p backend/models/FlashVSR-v1.1
+   cp /path/to/your/weights/* backend/models/FlashVSR-v1.1/
+   ```
 
-   - FastAPI 默认从 `backend/models/FlashVSR-v1.1/posi_prompt.pth` 读取 prompt tensor。若你需要自定义路径（例如放在共享权重目录中），可在 `backend/.env` 中设置：
-     ```bash
-     FLASHVSR_MODEL_PATH="/abs/path/to/FlashVSR-v1.1"
-     FLASHVSR_PROMPT_TENSOR_PATH="/abs/path/to/FlashVSR-v1.1/posi_prompt.pth"
-     ```
+   FastAPI 默认从 `backend/models/FlashVSR-v1.1/posi_prompt.pth` 读取 prompt tensor；若你需要自定义路径（例如挂载到共享权重目录），可在 `backend/.env` 中设置：
+
+   ```bash
+   FLASHVSR_MODEL_PATH="/abs/path/to/FlashVSR-v1.1"
+   FLASHVSR_PROMPT_TENSOR_PATH="/abs/path/to/FlashVSR-v1.1/posi_prompt.pth"
+   ```
 3. **复制环境变量模版并调整**
    ```bash
    # 本地开发：依赖由 docker-compose.dev.yml 提供
