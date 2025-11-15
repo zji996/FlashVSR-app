@@ -1,150 +1,20 @@
 import types
 import os
 import time
-from typing import Optional, Tuple, Literal, Callable
+from typing import Optional, Callable
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 from einops import rearrange
 from PIL import Image
 from tqdm import tqdm
-# import pyfiglet
 
 from ..models import ModelManager
 from ..models.wan_video_dit import WanModel, RMSNorm, sinusoidal_embedding_1d, build_3d_freqs
 from ..models.wan_video_vae import WanVideoVAE, RMS_norm, CausalConv3d, Upsample
 from ..schedulers.flow_match import FlowMatchScheduler
 from .base import BasePipeline
-
-
-# -----------------------------
-# 基础工具：ADAIN 所需的统计量（保留以备需要；管线默认用 wavelet）
-# -----------------------------
-def _calc_mean_std(feat: torch.Tensor, eps: float = 1e-5) -> Tuple[torch.Tensor, torch.Tensor]:
-    assert feat.dim() == 4, 'feat 必须是 (N, C, H, W)'
-    N, C = feat.shape[:2]
-    var = feat.view(N, C, -1).var(dim=2, unbiased=False) + eps
-    std = var.sqrt().view(N, C, 1, 1)
-    mean = feat.view(N, C, -1).mean(dim=2).view(N, C, 1, 1)
-    return mean, std
-
-
-def _adain(content_feat: torch.Tensor, style_feat: torch.Tensor) -> torch.Tensor:
-    assert content_feat.shape[:2] == style_feat.shape[:2], "ADAIN: N、C 必须匹配"
-    size = content_feat.size()
-    style_mean, style_std = _calc_mean_std(style_feat)
-    content_mean, content_std = _calc_mean_std(content_feat)
-    normalized = (content_feat - content_mean.expand(size)) / content_std.expand(size)
-    return normalized * style_std.expand(size) + style_mean.expand(size)
-
-
-# -----------------------------
-# 小波式模糊与分解/重构（ColorCorrector 用）
-# -----------------------------
-def _make_gaussian3x3_kernel(dtype, device) -> torch.Tensor:
-    vals = [
-        [0.0625, 0.125, 0.0625],
-        [0.125,  0.25,  0.125 ],
-        [0.0625, 0.125, 0.0625],
-    ]
-    return torch.tensor(vals, dtype=dtype, device=device)
-
-
-def _wavelet_blur(x: torch.Tensor, radius: int) -> torch.Tensor:
-    assert x.dim() == 4, 'x 必须是 (N, C, H, W)'
-    N, C, H, W = x.shape
-    base = _make_gaussian3x3_kernel(x.dtype, x.device)
-    weight = base.view(1, 1, 3, 3).repeat(C, 1, 1, 1)
-    pad = radius
-    x_pad = F.pad(x, (pad, pad, pad, pad), mode='replicate')
-    out = F.conv2d(x_pad, weight, bias=None, stride=1, padding=0, dilation=radius, groups=C)
-    return out
-
-
-def _wavelet_decompose(x: torch.Tensor, levels: int = 5) -> Tuple[torch.Tensor, torch.Tensor]:
-    assert x.dim() == 4, 'x 必须是 (N, C, H, W)'
-    high = torch.zeros_like(x)
-    low = x
-    for i in range(levels):
-        radius = 2 ** i
-        blurred = _wavelet_blur(low, radius)
-        high = high + (low - blurred)
-        low = blurred
-    return high, low
-
-
-def _wavelet_reconstruct(content: torch.Tensor, style: torch.Tensor, levels: int = 5) -> torch.Tensor:
-    c_high, _ = _wavelet_decompose(content, levels=levels)
-    _, s_low = _wavelet_decompose(style, levels=levels)
-    return c_high + s_low
-
-
-# -----------------------------
-# 无状态颜色矫正模块（视频友好，默认 wavelet）
-# -----------------------------
-class TorchColorCorrectorWavelet(nn.Module):
-    def __init__(self, levels: int = 5):
-        super().__init__()
-        self.levels = levels
-
-    @staticmethod
-    def _flatten_time(x: torch.Tensor) -> Tuple[torch.Tensor, int, int]:
-        assert x.dim() == 5, '输入必须是 (B, C, f, H, W)'
-        B, C, f, H, W = x.shape
-        y = x.permute(0, 2, 1, 3, 4).reshape(B * f, C, H, W)
-        return y, B, f
-
-    @staticmethod
-    def _unflatten_time(y: torch.Tensor, B: int, f: int) -> torch.Tensor:
-        BF, C, H, W = y.shape
-        assert BF == B * f
-        return y.reshape(B, f, C, H, W).permute(0, 2, 1, 3, 4)
-
-    def forward(
-        self,
-        hq_image: torch.Tensor,  # (B, C, f, H, W)
-        lq_image: torch.Tensor,  # (B, C, f, H, W)
-        clip_range: Tuple[float, float] = (-1.0, 1.0),
-        method: Literal['wavelet', 'adain'] = 'wavelet',
-        chunk_size: Optional[int] = None,
-    ) -> torch.Tensor:
-        assert hq_image.shape == lq_image.shape, "HQ 与 LQ 的形状必须一致"
-        assert hq_image.dim() == 5 and hq_image.shape[1] == 3, "输入必须是 (B, 3, f, H, W)"
-
-        B, C, f, H, W = hq_image.shape
-        if chunk_size is None or chunk_size >= f:
-            hq4, B, f = self._flatten_time(hq_image)
-            lq4, _, _ = self._flatten_time(lq_image)
-            if method == 'wavelet':
-                out4 = _wavelet_reconstruct(hq4, lq4, levels=self.levels)
-            elif method == 'adain':
-                out4 = _adain(hq4, lq4)
-            else:
-                raise ValueError(f"未知 method: {method}")
-            out4 = torch.clamp(out4, *clip_range)
-            out = self._unflatten_time(out4, B, f)
-            return out
-
-        outs = []
-        for start in range(0, f, chunk_size):
-            end = min(start + chunk_size, f)
-            hq_chunk = hq_image[:, :, start:end]
-            lq_chunk = lq_image[:, :, start:end]
-            hq4, B_, f_ = self._flatten_time(hq_chunk)
-            lq4, _, _ = self._flatten_time(lq_chunk)
-            if method == 'wavelet':
-                out4 = _wavelet_reconstruct(hq4, lq4, levels=self.levels)
-            elif method == 'adain':
-                out4 = _adain(hq4, lq4)
-            else:
-                raise ValueError(f"未知 method: {method}")
-            out4 = torch.clamp(out4, *clip_range)
-            out_chunk = self._unflatten_time(out4, B_, f_)
-            outs.append(out_chunk)
-        out = torch.cat(outs, dim=2)
-        return out
+from .flashvsr_color import TorchColorCorrectorWavelet
 
 
 # -----------------------------
@@ -163,16 +33,6 @@ class FlashVSRTinyLongPipeline(BasePipeline):
         self.use_unified_sequence_parallel = False
         self.prompt_emb_posi = None
         self.ColorCorrector = TorchColorCorrectorWavelet(levels=5)
-
-        print(r"""
-███████╗██╗      █████╗ ███████╗██╗  ██╗██╗   ██╗███████╗█████╗
-██╔════╝██║     ██╔══██╗██╔════╝██║  ██║██║   ██║██╔════╝██╔══██╗
-█████╗  ██║     ███████║███████╗███████║╚██╗ ██╔╝███████╗███████║
-██╔══╝  ██║     ██╔══██║╚════██║██╔══██║ ╚████╔╝ ╚════██║██╔═██║
-██║     ███████╗██║  ██║███████║██║  ██║  ╚██╔╝  ███████║██║  ██║
-╚═╝     ╚══════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
-                         ⚡FlashVSR
-""")
 
     def enable_vram_management(self, num_persistent_param_in_dit=None):
         # 仅管理 dit / vae
@@ -434,9 +294,13 @@ class FlashVSRTinyLongPipeline(BasePipeline):
             use_overlap = (
                 self.pp_overlap and self.pp_devices is not None and isinstance(self.pp_devices, (list, tuple)) and len(self.pp_devices) >= 2
             )
-            if use_overlap:
+            # Aggressive mode：在 basic overlap 上进一步拆分前处理阶段
+            overlap_mode = getattr(self, "pp_overlap_mode", "basic")
+            overlap_mode = (overlap_mode or "basic").lower()
+
+            if use_overlap and overlap_mode == "aggressive":
                 dev0, dev1 = self.pp_devices[0], self.pp_devices[-1]
-                # Dedicated copy stream on dev1 so activation copies don't block compute stream
+
                 try:
                     copy_stream_dev1 = torch.cuda.Stream(device=torch.device(dev1))
                 except Exception:
@@ -452,23 +316,20 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                     win = (2, 8, 8)
                     seqlen = f // win[0]
                     window_size = win[0] * h * w // 128
-                    # loop over specified blocks
                     for block_id in range(block_start, block_end + 1):
                         block = self.dit.blocks[block_id]
-                        # device guard
                         try:
                             p = next(block.parameters())
                             if p.device != compute_device:
                                 block.to(compute_device)
                         except StopIteration:
                             pass
-                        # LQ latent addend
                         if LQ_latents_for_win is not None and block_id < len(LQ_latents_for_win):
                             addend = LQ_latents_for_win[block_id]
                             if addend.device != x_tokens.device:
                                 addend = addend.to(x_tokens.device, non_blocking=True)
                             x_tokens = x_tokens + addend
-                        # caches
+
                         def _prepare_cache(cache_list, idx):
                             if cache_list is None:
                                 return None
@@ -478,6 +339,7 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                             if tensor.device == compute_device:
                                 return tensor
                             return tensor.to(compute_device, non_blocking=False)
+
                         def _offload_cache(tensor):
                             if tensor is None or self.cache_offload_device is None:
                                 return tensor
@@ -485,9 +347,9 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                                 return tensor
                             non_blocking = self.cache_offload_device != "cpu"
                             return tensor.to(self.cache_offload_device, non_blocking=non_blocking)
+
                         cache_k = _prepare_cache(pre_cache_k, block_id) if pre_cache_k is not None else None
                         cache_v = _prepare_cache(pre_cache_v, block_id) if pre_cache_v is not None else None
-                        # block forward
                         x_tokens, last_pre_cache_k, last_pre_cache_v = block(
                             x_tokens, context, t_mod_dev, freqs_dev, f, h, w,
                             local_num, topk,
@@ -497,13 +359,14 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                             is_stream=is_stream,
                             pre_cache_k=cache_k,
                             pre_cache_v=cache_v,
-                            local_range = local_range,
+                            local_range=local_range,
                         )
-                        if pre_cache_k is not None: pre_cache_k[block_id] = _offload_cache(last_pre_cache_k)
-                        if pre_cache_v is not None: pre_cache_v[block_id] = _offload_cache(last_pre_cache_v)
+                        if pre_cache_k is not None:
+                            pre_cache_k[block_id] = _offload_cache(last_pre_cache_k)
+                        if pre_cache_v is not None:
+                            pre_cache_v[block_id] = _offload_cache(last_pre_cache_v)
                     return x_tokens
 
-                # split index
                 if self.pp_split_idx is None:
                     split_idx = len(self.dit.blocks) // 2 - 1
                     split_idx = max(0, min(split_idx, len(self.dit.blocks) - 2))
@@ -512,18 +375,385 @@ class FlashVSRTinyLongPipeline(BasePipeline):
 
                 pre_cache_k = [None] * len(self.dit.blocks)
                 pre_cache_v = [None] * len(self.dit.blocks)
-                pending = None  # holds tuple for previous window
+
+                class WindowCtx:
+                    __slots__ = (
+                        "index",
+                        "cur_latents",
+                        "x_tokens",
+                        "LQ_latents",
+                        "f",
+                        "h",
+                        "w",
+                        "freqs_cpu",
+                        "LQ_pre_idx",
+                        "LQ_cur_idx",
+                        "x_mid_dev1",
+                    )
+
+                    def __init__(
+                        self,
+                        index,
+                        cur_latents,
+                        x_tokens,
+                        LQ_latents,
+                        f,
+                        h,
+                        w,
+                        freqs_cpu,
+                        LQ_pre_idx,
+                        LQ_cur_idx,
+                    ):
+                        self.index = index
+                        self.cur_latents = cur_latents
+                        self.x_tokens = x_tokens
+                        self.LQ_latents = LQ_latents
+                        self.f = f
+                        self.h = h
+                        self.w = w
+                        self.freqs_cpu = freqs_cpu
+                        self.LQ_pre_idx = LQ_pre_idx
+                        self.LQ_cur_idx = LQ_cur_idx
+                        self.x_mid_dev1 = None
+
+                def _stage_a_prepare(idx, prev_ctx):
+                    nonlocal LQ_pre_idx, LQ_cur_idx
+                    if idx == 0:
+                        local_pre_idx = 0
+                        LQ_latents_local = None
+                        inner_loop_num_local = 7
+                        for inner_idx in range(inner_loop_num_local):
+                            start_idx = max(0, inner_idx * 4 - 3)
+                            end_idx = (inner_idx + 1) * 4 - 3
+                            cur = self.denoising_model().LQ_proj_in.stream_forward(
+                                self._fetch_lq_clip(
+                                    LQ_video,
+                                    start_idx,
+                                    end_idx,
+                                    device=self.device,
+                                )
+                            ) if LQ_video is not None else None
+                            if cur is None:
+                                continue
+                            if LQ_latents_local is None:
+                                LQ_latents_local = cur
+                            else:
+                                for layer_idx in range(len(LQ_latents_local)):
+                                    LQ_latents_local[layer_idx] = torch.cat(
+                                        [LQ_latents_local[layer_idx], cur[layer_idx]], dim=1
+                                    )
+                        local_cur_idx = (inner_loop_num_local - 1) * 4 - 3
+                        cur_latents_local = _make_latents_window(idx)
+                    else:
+                        if prev_ctx is not None:
+                            LQ_pre_idx = prev_ctx.LQ_cur_idx
+                        LQ_latents_local = None
+                        inner_loop_num_local = 2
+                        for inner_idx in range(inner_loop_num_local):
+                            start_idx = idx * 8 + 17 + inner_idx * 4
+                            end_idx = idx * 8 + 21 + inner_idx * 4
+                            cur = self.denoising_model().LQ_proj_in.stream_forward(
+                                self._fetch_lq_clip(
+                                    LQ_video,
+                                    start_idx,
+                                    end_idx,
+                                    device=self.device,
+                                )
+                            ) if LQ_video is not None else None
+                            if cur is None:
+                                continue
+                            if LQ_latents_local is None:
+                                LQ_latents_local = cur
+                            else:
+                                for layer_idx in range(len(LQ_latents_local)):
+                                    LQ_latents_local[layer_idx] = torch.cat(
+                                        [LQ_latents_local[layer_idx], cur[layer_idx]], dim=1
+                                    )
+                        local_cur_idx = idx * 8 + 21 + (inner_loop_num_local - 2) * 4
+                        cur_latents_local = _make_latents_window(idx)
+
+                    x_tokens_local, (f_local, h_local, w_local) = self.dit.patchify(cur_latents_local)
+                    head_dim = self.dit.blocks[0].self_attn.head_dim
+                    if idx == 0:
+                        freqs_cpu_local, self.dit.freqs = build_3d_freqs(
+                            getattr(self.dit, "freqs", None),
+                            head_dim=head_dim,
+                            f=f_local,
+                            h=h_local,
+                            w=w_local,
+                            device="cpu",
+                            f_offset=0,
+                        )
+                    else:
+                        freqs_cpu_local, self.dit.freqs = build_3d_freqs(
+                            getattr(self.dit, "freqs", None),
+                            head_dim=head_dim,
+                            f=f_local,
+                            h=h_local,
+                            w=w_local,
+                            device="cpu",
+                            f_offset=4 + idx * 2,
+                        )
+                    if str(x_tokens_local.device) != str(torch.device(dev0)):
+                        x_tokens_local = x_tokens_local.to(dev0, non_blocking=True)
+                    ctx = WindowCtx(
+                        index=idx,
+                        cur_latents=cur_latents_local,
+                        x_tokens=x_tokens_local,
+                        LQ_latents=LQ_latents_local,
+                        f=f_local,
+                        h=h_local,
+                        w=w_local,
+                        freqs_cpu=freqs_cpu_local,
+                        LQ_pre_idx=LQ_pre_idx,
+                        LQ_cur_idx=local_cur_idx,
+                    )
+                    return ctx
+
+                def _run_stage0_and_copy(ctx: WindowCtx):
+                    f_local, h_local, w_local = ctx.f, ctx.h, ctx.w
+                    win = (2, 8, 8)
+                    seqlen = f_local // win[0]
+                    local_num_local = seqlen
+                    window_size = win[0] * h_local * w_local // 128
+                    square_num = window_size * window_size
+                    topk_local = int(square_num * topk_ratio) - 1
+                    kv_len_local = int(kv_ratio)
+
+                    freqs_dev0 = ctx.freqs_cpu.to(dev0, non_blocking=True)
+                    freqs_dev1 = ctx.freqs_cpu.to(dev1, non_blocking=True)
+                    t_mod_dev0 = self.t_mod.to(dev0, non_blocking=True)
+                    t_mod_dev1 = self.t_mod.to(dev1, non_blocking=True)
+
+                    x_tokens_local = ctx.x_tokens
+                    if x_tokens_local is None:
+                        x_tokens_local, _ = self.dit.patchify(ctx.cur_latents)
+                        ctx.x_tokens = x_tokens_local
+                    if str(x_tokens_local.device) != str(torch.device(dev0)):
+                        x_tokens_local = x_tokens_local.to(dev0, non_blocking=True)
+
+                    x_mid = _run_blocks_range(
+                        x_tokens_local,
+                        None,
+                        t_mod_dev0,
+                        freqs_dev0,
+                        f_local,
+                        h_local,
+                        w_local,
+                        local_num_local,
+                        topk_local,
+                        kv_len_local,
+                        is_full_block,
+                        True,
+                        0,
+                        split_idx,
+                        pre_cache_k,
+                        pre_cache_v,
+                        ctx.LQ_latents,
+                    )
+                    if copy_stream_dev1 is not None:
+                        with torch.cuda.stream(copy_stream_dev1):
+                            x_mid_dev1 = x_mid.to(dev1, non_blocking=True)
+                    else:
+                        x_mid_dev1 = x_mid.to(dev1, non_blocking=True)
+                    ctx.freqs_cpu = freqs_dev1
+                    ctx.x_mid_dev1 = x_mid_dev1
+                    return ctx
+
+                def _run_stage1_and_decode(ctx: WindowCtx):
+                    if ctx is None or ctx.x_mid_dev1 is None:
+                        return
+                    f_local, h_local, w_local = ctx.f, ctx.h, ctx.w
+                    win = (2, 8, 8)
+                    seqlen = f_local // win[0]
+                    local_num_local = seqlen
+                    window_size = win[0] * h_local * w_local // 128
+                    square_num = window_size * window_size
+                    topk_local = int(square_num * topk_ratio) - 1
+                    kv_len_local = int(kv_ratio)
+
+                    freqs_dev1 = ctx.freqs_cpu.to(dev1, non_blocking=True)
+                    t_mod_dev1 = self.t_mod.to(dev1, non_blocking=True)
+
+                    x_tail = _run_blocks_range(
+                        ctx.x_mid_dev1,
+                        None,
+                        t_mod_dev1,
+                        freqs_dev1,
+                        f_local,
+                        h_local,
+                        w_local,
+                        local_num_local,
+                        topk_local,
+                        kv_len_local,
+                        is_full_block,
+                        True,
+                        split_idx + 1,
+                        len(self.dit.blocks) - 1,
+                        pre_cache_k,
+                        pre_cache_v,
+                        ctx.LQ_latents,
+                    )
+                    try:
+                        if next(self.dit.head.parameters()).device != torch.device(dev1):
+                            self.dit.head.to(dev1)
+                    except StopIteration:
+                        pass
+                    noise_pred_posi = self.dit.head(
+                        x_tail, self.t.to(device=dev1, non_blocking=True)
+                    )
+                    noise_pred_posi = self.dit.unpatchify(noise_pred_posi, (f_local, h_local, w_local))
+                    latents_dev1 = ctx.cur_latents.to(dev1, non_blocking=True)
+                    latents_dev1 = latents_dev1 - noise_pred_posi
+                    cur_LQ_frame = self._fetch_lq_clip(
+                        LQ_video,
+                        ctx.LQ_pre_idx,
+                        ctx.LQ_cur_idx,
+                        device=dev1,
+                    )
+                    cur_frames = self.TCDecoder.decode_video(
+                        latents_dev1.transpose(1, 2),
+                        parallel=False,
+                        show_progress_bar=False,
+                        cond=cur_LQ_frame,
+                    ).transpose(1, 2).mul_(2).sub_(1)
+                    try:
+                        if color_fix:
+                            cur_frames = self.ColorCorrector(
+                                cur_frames,
+                                cur_LQ_frame,
+                                clip_range=(-1, 1),
+                                method="wavelet",
+                                chunk_size=color_chunk_size,
+                            )
+                    except Exception:
+                        pass
+                    cpu_chunk = cur_frames.to("cpu")
+                    if frame_chunk_handler is None:
+                        frames_total.append(cpu_chunk)
+                    else:
+                        frame_chunk_handler(cpu_chunk)
+                    self._release_lq_frames(LQ_video, ctx.LQ_cur_idx)
+
+                prev_ctx = None
+                cur_ctx = _stage_a_prepare(0, None) if process_total_num > 0 else None
 
                 for cur_process_idx in tqdm(range(process_total_num)):
-                    # Build LQ_latents and current latents (dev0)
+                    if cur_process_idx > 0 and prev_ctx is not None:
+                        _run_stage1_and_decode(prev_ctx)
+                        # 释放上一窗口中不再需要的大张量引用
+                        prev_ctx.cur_latents = None
+                        prev_ctx.x_tokens = None
+                        prev_ctx.LQ_latents = None
+
+                    if cur_ctx is None:
+                        break
+
+                    cur_ctx = _run_stage0_and_copy(cur_ctx)
+
+                    next_ctx = (
+                        _stage_a_prepare(cur_process_idx + 1, cur_ctx)
+                        if cur_process_idx + 1 < process_total_num
+                        else None
+                    )
+
+                    prev_ctx, cur_ctx = cur_ctx, next_ctx
+
+                if prev_ctx is not None:
+                    _run_stage1_and_decode(prev_ctx)
+
+                if frame_chunk_handler is not None:
+                    return None
+                frames_cat = torch.cat(frames_total, dim=2) if len(frames_total) > 0 else None
+                return frames_cat[0] if frames_cat is not None else None
+
+            # basic overlap（沿用原有实现）
+            if use_overlap and overlap_mode != "aggressive":
+                dev0, dev1 = self.pp_devices[0], self.pp_devices[-1]
+                try:
+                    copy_stream_dev1 = torch.cuda.Stream(device=torch.device(dev1))
+                except Exception:
+                    copy_stream_dev1 = None
+
+                def _run_blocks_range(x_tokens, context, t_mod_dev, freqs_dev, f, h, w,
+                                      local_num, topk, kv_len, is_full_block, is_stream,
+                                      block_start, block_end,
+                                      pre_cache_k, pre_cache_v,
+                                      LQ_latents_for_win):
+                    compute_device = x_tokens.device
+                    win = (2, 8, 8)
+                    seqlen = f // win[0]
+                    window_size = win[0] * h * w // 128
+                    for block_id in range(block_start, block_end + 1):
+                        block = self.dit.blocks[block_id]
+                        try:
+                            p = next(block.parameters())
+                            if p.device != compute_device:
+                                block.to(compute_device)
+                        except StopIteration:
+                            pass
+                        if LQ_latents_for_win is not None and block_id < len(LQ_latents_for_win):
+                            addend = LQ_latents_for_win[block_id]
+                            if addend.device != x_tokens.device:
+                                addend = addend.to(x_tokens.device, non_blocking=True)
+                            x_tokens = x_tokens + addend
+
+                        def _prepare_cache(cache_list, idx):
+                            if cache_list is None:
+                                return None
+                            tensor = cache_list[idx]
+                            if tensor is None:
+                                return None
+                            if tensor.device == compute_device:
+                                return tensor
+                            return tensor.to(compute_device, non_blocking=False)
+
+                        def _offload_cache(tensor):
+                            if tensor is None or self.cache_offload_device is None:
+                                return tensor
+                            if tensor.device == self.cache_offload_device:
+                                return tensor
+                            non_blocking = self.cache_offload_device != "cpu"
+                            return tensor.to(self.cache_offload_device, non_blocking=non_blocking)
+
+                        cache_k = _prepare_cache(pre_cache_k, block_id) if pre_cache_k is not None else None
+                        cache_v = _prepare_cache(pre_cache_v, block_id) if pre_cache_v is not None else None
+                        x_tokens, last_pre_cache_k, last_pre_cache_v = block(
+                            x_tokens, context, t_mod_dev, freqs_dev, f, h, w,
+                            local_num, topk,
+                            block_id=block_id,
+                            kv_len=kv_len,
+                            is_full_block=is_full_block,
+                            is_stream=is_stream,
+                            pre_cache_k=cache_k,
+                            pre_cache_v=cache_v,
+                            local_range=local_range,
+                        )
+                        if pre_cache_k is not None:
+                            pre_cache_k[block_id] = _offload_cache(last_pre_cache_k)
+                        if pre_cache_v is not None:
+                            pre_cache_v[block_id] = _offload_cache(last_pre_cache_v)
+                    return x_tokens
+
+                if self.pp_split_idx is None:
+                    split_idx = len(self.dit.blocks) // 2 - 1
+                    split_idx = max(0, min(split_idx, len(self.dit.blocks) - 2))
+                else:
+                    split_idx = self.pp_split_idx
+
+                pre_cache_k = [None] * len(self.dit.blocks)
+                pre_cache_v = [None] * len(self.dit.blocks)
+                pending = None
+
+                for cur_process_idx in tqdm(range(process_total_num)):
                     if cur_process_idx == 0:
                         pre_cache_k = [None] * len(self.dit.blocks)
                         pre_cache_v = [None] * len(self.dit.blocks)
                         LQ_latents = None
                         inner_loop_num = 7
                         for inner_idx in range(inner_loop_num):
-                            start_idx = max(0, inner_idx*4-3)
-                            end_idx = (inner_idx+1)*4-3
+                            start_idx = max(0, inner_idx * 4 - 3)
+                            end_idx = (inner_idx + 1) * 4 - 3
                             cur = self.denoising_model().LQ_proj_in.stream_forward(
                                 self._fetch_lq_clip(
                                     LQ_video,
@@ -538,15 +768,17 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                                 LQ_latents = cur
                             else:
                                 for layer_idx in range(len(LQ_latents)):
-                                    LQ_latents[layer_idx] = torch.cat([LQ_latents[layer_idx], cur[layer_idx]], dim=1)
-                        LQ_cur_idx = (inner_loop_num-1)*4-3
+                                    LQ_latents[layer_idx] = torch.cat(
+                                        [LQ_latents[layer_idx], cur[layer_idx]], dim=1
+                                    )
+                        LQ_cur_idx_local = (inner_loop_num - 1) * 4 - 3
                         cur_latents = _make_latents_window(cur_process_idx)
                     else:
                         LQ_latents = None
                         inner_loop_num = 2
                         for inner_idx in range(inner_loop_num):
-                            start_idx = cur_process_idx*8+17+inner_idx*4
-                            end_idx = cur_process_idx*8+21+inner_idx*4
+                            start_idx = cur_process_idx * 8 + 17 + inner_idx * 4
+                            end_idx = cur_process_idx * 8 + 21 + inner_idx * 4
                             cur = self.denoising_model().LQ_proj_in.stream_forward(
                                 self._fetch_lq_clip(
                                     LQ_video,
@@ -561,13 +793,13 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                                 LQ_latents = cur
                             else:
                                 for layer_idx in range(len(LQ_latents)):
-                                    LQ_latents[layer_idx] = torch.cat([LQ_latents[layer_idx], cur[layer_idx]], dim=1)
-                        LQ_cur_idx = cur_process_idx*8+21+(inner_loop_num-2)*4
+                                    LQ_latents[layer_idx] = torch.cat(
+                                        [LQ_latents[layer_idx], cur[layer_idx]], dim=1
+                                    )
+                        LQ_cur_idx_local = cur_process_idx * 8 + 21 + (inner_loop_num - 2) * 4
                         cur_latents = _make_latents_window(cur_process_idx)
 
-                    # patchify and RoPE per-device for this window
                     x_tokens, (f, h, w) = self.dit.patchify(cur_latents)
-                    # pre-stage freqs/t_mod per device（使用统一的 3D RoPE 构造，避免维度漂移）
                     head_dim = self.dit.blocks[0].self_attn.head_dim
                     if cur_process_idx == 0:
                         freqs_cpu, self.dit.freqs = build_3d_freqs(
@@ -594,7 +826,6 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                     t_mod_dev0 = self.t_mod.to(dev0, non_blocking=True)
                     t_mod_dev1 = self.t_mod.to(dev1, non_blocking=True)
 
-                    # set scheduling params for this window
                     win = (2, 8, 8)
                     seqlen = f // win[0]
                     local_num = seqlen
@@ -603,47 +834,82 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                     topk = int(square_num * topk_ratio) - 1
                     kv_len = int(kv_ratio)
 
-                    # ensure tokens on dev0
                     if str(x_tokens.device) != str(torch.device(dev0)):
                         x_tokens = x_tokens.to(dev0, non_blocking=True)
-                    # If we have a pending window, finish its Stage1 now on dev1 first,
-                    # then immediately start Stage0 for the current window on dev0 to overlap.
                     if pending is not None:
-                        (prev_idx, prev_x_mid_dev1, prev_LQ_latents, prev_f, prev_h, prev_w,
-                         prev_freqs_dev1, prev_t_mod_dev1, prev_cur_latents, prev_LQ_pre_idx, prev_LQ_cur_idx) = pending
-                        # Stage1 for previous window
+                        (
+                            prev_idx,
+                            prev_x_mid_dev1,
+                            prev_LQ_latents,
+                            prev_f,
+                            prev_h,
+                            prev_w,
+                            prev_freqs_dev1,
+                            prev_t_mod_dev1,
+                            prev_cur_latents,
+                            prev_LQ_pre_idx,
+                            prev_LQ_cur_idx,
+                        ) = pending
                         x_tail = _run_blocks_range(
-                            prev_x_mid_dev1, None, prev_t_mod_dev1, prev_freqs_dev1,
-                            prev_f, prev_h, prev_w,
-                            local_num, topk, kv_len, is_full_block, True,
-                            split_idx+1, len(self.dit.blocks)-1, pre_cache_k, pre_cache_v, prev_LQ_latents)
-                        # head + unpatchify on dev1
-                        # ensure head on dev1
+                            prev_x_mid_dev1,
+                            None,
+                            prev_t_mod_dev1,
+                            prev_freqs_dev1,
+                            prev_f,
+                            prev_h,
+                            prev_w,
+                            local_num,
+                            topk,
+                            kv_len,
+                            is_full_block,
+                            True,
+                            split_idx + 1,
+                            len(self.dit.blocks) - 1,
+                            pre_cache_k,
+                            pre_cache_v,
+                            prev_LQ_latents,
+                        )
                         try:
                             if next(self.dit.head.parameters()).device != torch.device(dev1):
                                 self.dit.head.to(dev1)
                         except StopIteration:
                             pass
-                        noise_pred_posi_prev = self.dit.head(x_tail, self.t.to(device=dev1, non_blocking=True))
-                        noise_pred_posi_prev = self.dit.unpatchify(noise_pred_posi_prev, (prev_f, prev_h, prev_w))
-                        # Update latent for previous window on GPU1; defer decode to after Stage0 scheduling
+                        noise_pred_posi_prev = self.dit.head(
+                            x_tail, self.t.to(device=dev1, non_blocking=True)
+                        )
+                        noise_pred_posi_prev = self.dit.unpatchify(
+                            noise_pred_posi_prev, (prev_f, prev_h, prev_w)
+                        )
                         prev_latents_dev1 = prev_cur_latents.to(dev1, non_blocking=True)
                         prev_latents_dev1 = prev_latents_dev1 - noise_pred_posi_prev
 
-                    # Immediately schedule Stage0 on dev0 for current window to maximize overlap
                     if str(x_tokens.device) != str(torch.device(dev0)):
                         x_tokens = x_tokens.to(dev0, non_blocking=True)
                     x_mid = _run_blocks_range(
-                        x_tokens, None, t_mod_dev0, freqs_dev0, f, h, w,
-                        local_num, topk, kv_len, is_full_block, True,
-                        0, split_idx, pre_cache_k, pre_cache_v, LQ_latents)
+                        x_tokens,
+                        None,
+                        t_mod_dev0,
+                        freqs_dev0,
+                        f,
+                        h,
+                        w,
+                        local_num,
+                        topk,
+                        kv_len,
+                        is_full_block,
+                        True,
+                        0,
+                        split_idx,
+                        pre_cache_k,
+                        pre_cache_v,
+                        LQ_latents,
+                    )
                     if copy_stream_dev1 is not None:
                         with torch.cuda.stream(copy_stream_dev1):
                             x_mid_dev1 = x_mid.to(dev1, non_blocking=True)
                     else:
                         x_mid_dev1 = x_mid.to(dev1, non_blocking=True)
 
-                    # Now finish decode/color/cpu-copy for the previous window (on GPU1)
                     if pending is not None:
                         cur_LQ_frame = self._fetch_lq_clip(
                             LQ_video,
@@ -663,12 +929,12 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                                     cur_frames,
                                     cur_LQ_frame,
                                     clip_range=(-1, 1),
-                                    method='wavelet',
+                                    method="wavelet",
                                     chunk_size=color_chunk_size,
                                 )
                         except Exception:
                             pass
-                        cpu_chunk = cur_frames.to('cpu')
+                        cpu_chunk = cur_frames.to("cpu")
                         if frame_chunk_handler is None:
                             frames_total.append(cpu_chunk)
                         else:
@@ -676,27 +942,64 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                         self._release_lq_frames(LQ_video, prev_LQ_cur_idx)
                         LQ_pre_idx = prev_LQ_cur_idx
 
-                    # set new pending window (current) to be finished next iter
-                    pending = (cur_process_idx, x_mid_dev1, LQ_latents, f, h, w,
-                               freqs_dev1, t_mod_dev1, cur_latents, LQ_pre_idx, LQ_cur_idx)
+                    pending = (
+                        cur_process_idx,
+                        x_mid_dev1,
+                        LQ_latents,
+                        f,
+                        h,
+                        w,
+                        freqs_dev1,
+                        t_mod_dev1,
+                        cur_latents,
+                        LQ_pre_idx,
+                        LQ_cur_idx_local,
+                    )
 
-                # flush tail: finish last pending window Stage1
                 if pending is not None:
-                    (prev_idx, prev_x_mid_dev1, prev_LQ_latents, prev_f, prev_h, prev_w,
-                     prev_freqs_dev1, prev_t_mod_dev1, prev_cur_latents, prev_LQ_pre_idx, prev_LQ_cur_idx) = pending
+                    (
+                        prev_idx,
+                        prev_x_mid_dev1,
+                        prev_LQ_latents,
+                        prev_f,
+                        prev_h,
+                        prev_w,
+                        prev_freqs_dev1,
+                        prev_t_mod_dev1,
+                        prev_cur_latents,
+                        prev_LQ_pre_idx,
+                        prev_LQ_cur_idx,
+                    ) = pending
                     x_tail = _run_blocks_range(
-                        prev_x_mid_dev1, None, prev_t_mod_dev1, prev_freqs_dev1,
-                        prev_f, prev_h, prev_w,
-                        local_num, topk, kv_len, is_full_block, True,
-                        split_idx+1, len(self.dit.blocks)-1, pre_cache_k, pre_cache_v, prev_LQ_latents)
+                        prev_x_mid_dev1,
+                        None,
+                        prev_t_mod_dev1,
+                        prev_freqs_dev1,
+                        prev_f,
+                        prev_h,
+                        prev_w,
+                        local_num,
+                        topk,
+                        kv_len,
+                        is_full_block,
+                        True,
+                        split_idx + 1,
+                        len(self.dit.blocks) - 1,
+                        pre_cache_k,
+                        pre_cache_v,
+                        prev_LQ_latents,
+                    )
                     try:
                         if next(self.dit.head.parameters()).device != torch.device(dev1):
                             self.dit.head.to(dev1)
                     except StopIteration:
                         pass
-                    noise_pred_posi_prev = self.dit.head(x_tail, self.t.to(device=dev1, non_blocking=True))
-                    noise_pred_posi_prev = self.dit.unpatchify(noise_pred_posi_prev, (prev_f, prev_h, prev_w))
-                    # Keep computation on dev1
+                    noise_pred_posi_prev = self.dit.head(
+                        x_tail, self.t.to(device=dev1, non_blocking=True)
+                    )
+                    noise_pred_posi_prev = self.dit.unpatchify(
+                        noise_pred_posi_prev, (prev_f, prev_h, prev_w)
+                    )
                     prev_latents_dev1 = prev_cur_latents.to(dev1, non_blocking=True)
                     prev_latents_dev1 = prev_latents_dev1 - noise_pred_posi_prev
                     cur_LQ_frame = self._fetch_lq_clip(
@@ -717,17 +1020,17 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                                 cur_frames,
                                 cur_LQ_frame,
                                 clip_range=(-1, 1),
-                                method='wavelet',
+                                method="wavelet",
                                 chunk_size=color_chunk_size,
                             )
                     except Exception:
                         pass
                     if frame_chunk_handler is None:
-                        frames_total.append(cur_frames.to('cpu'))
+                        frames_total.append(cur_frames.to("cpu"))
                     else:
-                        frame_chunk_handler(cur_frames.to('cpu'))
+                        frame_chunk_handler(cur_frames.to("cpu"))
                     self._release_lq_frames(LQ_video, prev_LQ_cur_idx)
-                # concat frames if needed
+
                 if frame_chunk_handler is not None:
                     return None
                 frames_cat = torch.cat(frames_total, dim=2) if len(frames_total) > 0 else None

@@ -26,10 +26,8 @@ from tqdm import tqdm
 from app.config import settings
 from app.services.chunk_export import ChunkedExportSession
 from app.services.video_streaming import StreamingVideoTensor
-from app.flashvsr_core import FlashVSRTinyLongPipeline, ModelManager
-from app.flashvsr_core.wan_utils import build_tcdecoder, Causal_LQ4x_Proj
 
-# Block-Sparse 注意力依赖的 CUDA 扩展
+# Block-Sparse 注意力依赖的 CUDA 扩展路径（实际导入在 FlashVSR pipeline 初始化时触发）
 BLOCK_SPARSE_PATH = settings.THIRD_PARTY_BLOCK_SPARSE_PATH
 if str(BLOCK_SPARSE_PATH) not in sys.path:
     sys.path.insert(0, str(BLOCK_SPARSE_PATH))
@@ -697,6 +695,10 @@ class FlashVSRService:
         当前实现仅支持 tiny_long 变体。
         """
 
+        # 延迟导入 FlashVSR 相关依赖，避免在仅使用辅助方法或系统状态查询时就触发重型模型加载。
+        from app.flashvsr_core import FlashVSRTinyLongPipeline, ModelManager
+        from app.flashvsr_core.wan_utils import build_tcdecoder, Causal_LQ4x_Proj
+
         print(f"🚀 初始化 FlashVSR {settings.FLASHVSR_VERSION} pipeline ({variant})...")
         model_path = settings.FLASHVSR_MODEL_PATH
 
@@ -782,6 +784,14 @@ class FlashVSRService:
             try:
                 pipe.enable_pipeline_parallel(pp_devices, split_index=pp_split)
                 print(f"🔀 Pipeline parallel enabled on {pp_devices} (split @ block {pp_split if pp_split is not None else 'auto'})")
+                # 传递重叠调度模式给 pipeline（若实现）
+                try:
+                    overlap_mode = getattr(settings, "FLASHVSR_PP_OVERLAP_MODE", "basic")
+                    if hasattr(pipe, "pp_overlap_mode"):
+                        pipe.pp_overlap_mode = (overlap_mode or "basic").lower()
+                        print(f"⚙️ Pipeline overlap mode set to {pipe.pp_overlap_mode}")
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"⚠️ 启用流水线并行失败：{e}")
             # When PP is enabled, move TCDecoder to the last stage device to free GPU0 for Stage0

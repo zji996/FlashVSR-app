@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     FLASHVSR_PP_SPLIT_BLOCK: str = "auto"
     # 是否在单视频上启用两段流水线的窗口级重叠（Stage0(t+1) 与 Stage1(t) 并行）
     FLASHVSR_PP_OVERLAP: bool = False
+    # 重叠调度模式：basic（现有实现，默认）| aggressive（更激进的三阶段流水线）
+    FLASHVSR_PP_OVERLAP_MODE: str = "basic"
     FLASHVSR_STREAMING_LQ_MAX_BYTES: int = 0
     FLASHVSR_STREAMING_PREFETCH_FRAMES: int = 25
     FLASHVSR_STREAMING_DECODE_THREADS: int = 2

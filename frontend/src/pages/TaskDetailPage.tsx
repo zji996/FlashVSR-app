@@ -79,12 +79,17 @@ export default function TaskDetailPage() {
     );
   };
 
-  const formatTime = (seconds: number | undefined) => {
+  const formatTime = (seconds: number | undefined | null) => {
     if (seconds === undefined || seconds === null) return '--';
     if (seconds < 60) return `${seconds}秒`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
     return `${Math.floor(seconds / 3600)}小时${Math.floor((seconds % 3600) / 60)}分`;
   };
+
+  const startedAt = task.started_at ? new Date(task.started_at) : null;
+  const finishedAt = task.finished_at ? new Date(task.finished_at) : null;
+  const durationSeconds =
+    startedAt && finishedAt ? Math.max(0, Math.round((finishedAt.getTime() - startedAt.getTime()) / 1000)) : null;
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -165,6 +170,30 @@ export default function TaskDetailPage() {
           <div className="mb-8">
             <h3 className="text-lg font-semibold mb-4">视频信息</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {startedAt && (
+                <div className="p-4 bg-gray-50 rounded-lg">
+                  <div className="text-sm text-gray-600">开始时间</div>
+                  <div className="text-lg font-semibold">
+                    {startedAt.toLocaleString('zh-CN')}
+                  </div>
+                </div>
+              )}
+              {finishedAt && (
+                <div className="p-4 bg-gray-50 rounded-lg">
+                  <div className="text-sm text-gray-600">完成时间</div>
+                  <div className="text-lg font-semibold">
+                    {finishedAt.toLocaleString('zh-CN')}
+                  </div>
+                </div>
+              )}
+              {durationSeconds !== null && (
+                <div className="p-4 bg-gray-50 rounded-lg">
+                  <div className="text-sm text-gray-600">端到端耗时</div>
+                  <div className="text-lg font-semibold">
+                    {formatTime(durationSeconds)}
+                  </div>
+                </div>
+              )}
               <div className="p-4 bg-gray-50 rounded-lg">
                 <div className="text-sm text-gray-600">分辨率</div>
                 <div className="text-lg font-semibold">

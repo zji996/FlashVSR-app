@@ -32,3 +32,8 @@ dependencies = [
     "sentencepiece>=0.2.1",
     "ftfy>=6.3.1",
 ]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+]

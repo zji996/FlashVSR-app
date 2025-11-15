@@ -4,14 +4,15 @@
 FlashVSR keeps backend and frontend work in a single repo. `backend/app/api` hosts FastAPI routers, `core/` wires config/Celery, `services/` + `tasks/` run GPU jobs, and `schemas/` + `models/` define Pydantic/SQLAlchemy types. Frontend logic stays in `frontend/src` with fetch helpers in `api/`, routed pages in `pages/`, and state in `stores/`. Checkpoints belong in `models/`, uploads/results in `storage/uploads` + `storage/results`, and refs live in `assets/`, `docs/`, and `scripts/`.
 
 ## Build, Test, and Development Commands
-- `uv --project backend sync` — install backend dependencies.
-- `source backend/.venv/bin/activate && cd backend && fastapi dev app/main.py` — start the API with auto-reload (推荐方式).
-- `cd backend && uv run fastapi dev app/main.py` — start the API with uv run (备选方式).
+- `uv --project backend sync` — install backend dependencies and populate `backend/.venv` (uv-managed venv).
+- `source backend/.venv/bin/activate && cd backend && fastapi dev app/main.py` — start the API with auto-reload (推荐方式，使用 uv 创建的虚拟环境).
+- `cd backend && uv run fastapi dev app/main.py` — start the API with uv run (备选方式，无需手动激活 venv).
 - `source backend/.venv/bin/activate && cd backend && celery -A app.core.celery_app worker --loglevel=info --concurrency=1` — run the GPU worker.
 - `source backend/.venv/bin/activate && cd backend && alembic upgrade head` — apply DB migrations.
 - `cd frontend && pnpm install && pnpm dev` — install and boot the Vite dev server.
 - `cd frontend && pnpm lint` — lint/format the React codebase.
-- `source backend/.venv/bin/activate && cd backend && pytest` — execute backend tests.
+- `cd backend && uv run pytest` — execute backend tests via uv (推荐方式；pytest 作为 dev-dependency 通过 uv 安装到 `backend/.venv` 中)。
+- `source backend/.venv/bin/activate && cd backend && pytest` — execute backend tests using the same uv-managed venv (若 pytest 未找到，请先运行 `uv --project backend sync`).
 - `docker compose up --build` — launch the full stack with Postgres and Redis.
 
 ## Frontend Notes

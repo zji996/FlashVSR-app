@@ -221,6 +221,7 @@ CUDA_VISIBLE_DEVICES=1 FLASHVSR_DEVICE=cuda \
 - 环境变量：
   - `FLASHVSR_PP_DEVICES`：逗号分隔设备列表，例如 `cuda:0,cuda:1` 或 `0,1`（为空表示关闭）。
   - `FLASHVSR_PP_SPLIT_BLOCK`：切分点（block 索引，以左闭右开，默认 `auto` 表示居中切分）。
+  - `FLASHVSR_PP_OVERLAP_MODE`：重叠调度模式，`basic`（默认）沿用原有实现，`aggressive` 启用更激进的三阶段窗口流水线（需两卡且仅在 Tiny Long/Full 实验）。
 - 行为：
   - `patch_embedding` 与前半段 blocks 放在第一个设备；后半段 blocks 与 `head` 放在最后一个设备。
   - 推理时在切分点把中间激活（和 RoPE 频率表、时间调制张量）搬迁到下一个设备。
@@ -249,6 +250,7 @@ export FLASHVSR_PP_SPLIT_BLOCK=auto      # 或者具体层号，比如 19
 export FLASHVSR_PP_DEVICES="0,1"
 export FLASHVSR_PP_SPLIT_BLOCK=auto
 export FLASHVSR_PP_OVERLAP=1
+export FLASHVSR_PP_OVERLAP_MODE=basic   # 或 aggressive，启用更激进的 3-stage 调度
 ```
 
 若启用后希望与单卡保持一致的画质，重叠调度保持数学等价，仅调度与数据搬迁方式不同；如需最大吞吐仍建议结合“任务级并行”。

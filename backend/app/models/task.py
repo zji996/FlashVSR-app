@@ -26,6 +26,9 @@ class Task(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    # 任务开始与完成时间（用于统计耗时）
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
     
     # 任务状态
     status = Column(SQLEnum(TaskStatus), default=TaskStatus.PENDING, nullable=False, index=True)
@@ -56,4 +59,3 @@ class Task(Base):
     
     def __repr__(self):
         return f"<Task {self.id} - {self.status.value}>"
-

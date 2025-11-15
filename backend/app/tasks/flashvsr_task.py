@@ -2,6 +2,7 @@
 
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -40,8 +41,10 @@ def process_video_task(self, task_id: str):
         if not task:
             raise ValueError(f"任务不存在: {task_id}")
         
-        # 更新任务状态
+        # 更新任务状态与开始时间
         task.status = TaskStatus.PROCESSING
+        if task.started_at is None:
+            task.started_at = datetime.utcnow()
         task.celery_task_id = self.request.id
         db.commit()
         
@@ -150,6 +153,7 @@ def process_video_task(self, task_id: str):
         
         # 更新任务状态为完成
         task.status = TaskStatus.COMPLETED
+        task.finished_at = datetime.utcnow()
         task.progress = 100.0
         task.output_file_path = output_path
         task.output_file_name = output_filename
@@ -180,6 +184,10 @@ def process_video_task(self, task_id: str):
         task = db.query(Task).filter(Task.id == UUID(task_id)).first()
         if task:
             task.status = TaskStatus.FAILED
+            if task.started_at is None:
+                task.started_at = datetime.utcnow()
+            if task.finished_at is None:
+                task.finished_at = datetime.utcnow()
             task.error_message = str(e)
             db.commit()
 

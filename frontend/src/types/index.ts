@@ -53,6 +53,8 @@ export interface Task {
   id: string;
   created_at: string;
   updated_at: string;
+  started_at?: string;
+  finished_at?: string;
   status: TaskStatus;
   input_file_name: string;
   output_file_name?: string;
@@ -76,6 +78,8 @@ export interface TaskProgressResponse {
   task_id: string;
   status: TaskStatus;
   progress: number;
+  started_at?: string;
+  finished_at?: string;
   processed_frames: number;
   total_frames?: number;
   estimated_time_remaining?: number;

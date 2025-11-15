@@ -64,6 +64,8 @@ class TaskResponse(BaseModel):
     id: UUID
     created_at: datetime
     updated_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     status: TaskStatus
     
     input_file_name: str
@@ -93,6 +95,8 @@ class TaskProgressResponse(BaseModel):
     task_id: UUID
     status: TaskStatus
     progress: float
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     processed_frames: int
     total_frames: Optional[int]
     estimated_time_remaining: Optional[int]
