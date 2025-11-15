@@ -47,6 +47,8 @@ def get_system_status(db: Session = Depends(get_db)):
             flashvsr_assets.get("exists", False)
             and not flashvsr_assets.get("missing_files")
         ),
+        "auto_download_used": flashvsr_assets.get("auto_download_used", False),
+        "model_source": flashvsr_assets.get("model_source"),
     }
 
     return {
@@ -60,4 +62,26 @@ def get_system_status(db: Session = Depends(get_db)):
             "failed": failed_tasks,
         },
         "flashvsr": flashvsr_info,
+    }
+
+
+@router.get("/assets")
+def get_system_assets():
+    """获取 FlashVSR 资源健康状态."""
+    flashvsr_assets = FlashVSRService.inspect_assets()
+    return {
+        "flashvsr": {
+            "version": settings.FLASHVSR_VERSION,
+            "default_variant": settings.DEFAULT_MODEL_VARIANT,
+            "available_variants": list(FlashVSRService.SUPPORTED_VARIANTS),
+            "ready_variants": flashvsr_assets.get("ready_variants", {}),
+            "missing_files": flashvsr_assets.get("missing_files", []),
+            "model_path": flashvsr_assets.get("model_path"),
+            "weights_ready": (
+                flashvsr_assets.get("exists", False)
+                and not flashvsr_assets.get("missing_files")
+            ),
+            "auto_download_used": flashvsr_assets.get("auto_download_used", False),
+            "model_source": flashvsr_assets.get("model_source"),
+        }
     }

@@ -8,7 +8,7 @@
 
 相关代码：
 
-- 环境变量解析：`backend/app/services/flashvsr_service.py` 中 `_parse_pipeline_parallel`。
+- 环境变量解析：`backend/app/services/flashvsr_device.py` 中 `parse_pipeline_parallel`。
 - 流水线并行布置：`backend/app/flashvsr_core/diffsynth/pipelines/flashvsr_tiny_long.py:enable_pipeline_parallel`。
 - 窗口级重叠调度：同文件 `__call__` 中 “Overlapped two-stage schedule (single-video acceleration)” 分支。
 

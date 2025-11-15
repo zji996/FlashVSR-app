@@ -110,5 +110,7 @@ export interface SystemStatus {
     missing_files: string[];
     model_path?: string;
     weights_ready: boolean;
+    auto_download_used?: boolean;
+    model_source?: 'ModelScope' | 'local' | null;
   };
 }

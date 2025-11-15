@@ -29,23 +29,6 @@ class PreprocessResult:
 class VideoPreprocessor:
     """基于 FFmpeg 的预处理封装."""
 
-    SAFE_EXTENSIONS: tuple[str, ...] = (
-        ".mp4",
-        ".mov",
-        ".mkv",
-        ".avi",
-        ".webm",
-    )
-    FORCE_TRANSCODE_EXTENSIONS: tuple[str, ...] = (
-        ".ts",
-        ".m2ts",
-        ".mts",
-        ".m4s",
-        ".mpeg",
-        ".mpg",
-        ".vob",
-    )
-
     def __init__(self) -> None:
         self.tmp_dir = settings.PREPROCESS_TMP_DIR
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -56,7 +39,7 @@ class VideoPreprocessor:
         metadata: VideoMetadata,
         params: TaskParameters,
     ) -> PreprocessResult:
-        """始终执行预处理：容器规范化 + 缩放 + 音频分离."""
+        """执行预处理：容器规范化 + 缩放 + 音频分离."""
 
         target_width = params.preprocess_width
         if metadata.width and target_width and metadata.width <= target_width:
@@ -86,16 +69,6 @@ class VideoPreprocessor:
             path.unlink(missing_ok=True)
         except Exception:
             pass
-
-    def _needs_container_normalization(self, input_path: Path) -> bool:
-        """判断是否需要通过 FFmpeg 转换容器."""
-        suffix = input_path.suffix.lower()
-        if suffix in self.FORCE_TRANSCODE_EXTENSIONS:
-            return True
-        if suffix in self.SAFE_EXTENSIONS:
-            return False
-        # 其他未知扩展统一交给 FFmpeg 规范化，增加格式覆盖面
-        return True
 
     def _run_ffmpeg(self, input_path: Path, output_path: Path, target_width: Optional[int]) -> None:
         """执行缩放/容器转换命令。

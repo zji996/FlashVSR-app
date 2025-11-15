@@ -25,6 +25,11 @@ from tqdm import tqdm
 
 from app.config import settings
 from app.services.chunk_export import ChunkedExportSession
+from app.services.flashvsr_device import (
+    resolve_device,
+    decide_cache_offload_device,
+    parse_pipeline_parallel,
+)
 from app.services.video_streaming import StreamingVideoTensor
 
 # Block-Sparse 注意力依赖的 CUDA 扩展路径（实际导入在 FlashVSR pipeline 初始化时触发）
@@ -58,6 +63,8 @@ class FlashVSRService:
     _instance: Optional["FlashVSRService"] = None
     _pipelines: dict[str, PipelineHandle] = {}
     _lock: Lock = Lock()
+    _auto_download_used: bool = False
+    _auto_download_source: Optional[str] = None
 
     def __new__(cls):
         if cls._instance is None:
@@ -91,12 +98,24 @@ class FlashVSRService:
         }
         missing_files = [name for name, ok in file_status.items() if not ok]
 
+        if cls._auto_download_used:
+            model_source = cls._auto_download_source or "ModelScope"
+            auto_download_used = True
+        else:
+            auto_download_used = False
+            if model_path.exists() and not missing_files:
+                model_source = "local"
+            else:
+                model_source = None
+
         return {
             "model_path": str(model_path),
             "exists": model_path.exists(),
             "files": file_status,
             "ready_variants": ready_variants,
             "missing_files": missing_files,
+            "auto_download_used": auto_download_used,
+            "model_source": model_source,
         }
 
     def process_video(
@@ -710,6 +729,9 @@ class FlashVSRService:
         missing = [name for name in needed_files if not (model_path / name).exists()]
         prompt_missing = not self.PROMPT_TENSOR_FILE.exists()
 
+        auto_download_used = False
+        model_source = "local"
+
         if missing or prompt_missing:
             missing_desc = ", ".join(missing + (["posi_prompt.pth"] if prompt_missing else []))
             print(
@@ -751,6 +773,12 @@ class FlashVSRService:
                     + f" (根目录: {model_path})，请手动下载或检查路径配置。"
                 )
 
+            auto_download_used = True
+            model_source = "ModelScope"
+
+        type(self)._auto_download_used = auto_download_used
+        type(self)._auto_download_source = model_source
+
         # 到这里权重文件已存在，本地加载模型即可。
         mm = ModelManager(torch_dtype=torch.bfloat16, device="cpu")
         weights_to_load = [str(model_path / self.BASE_MODEL_FILES[0])]
@@ -767,7 +795,7 @@ class FlashVSRService:
 
         pipeline_cls = FlashVSRTinyLongPipeline
 
-        device = self._resolve_device()
+        device = resolve_device()
         print(f"📍 使用设备: {device}")
         if device.startswith("cuda"):
             gpu_index = 0
@@ -783,7 +811,7 @@ class FlashVSRService:
 
         pipe = pipeline_cls.from_model_manager(mm, device=device)
 
-        cache_device, cache_reason = self._decide_cache_offload_device(device)
+        cache_device, cache_reason = decide_cache_offload_device(device)
         pipe.set_cache_offload_device(cache_device)
         if cache_device:
             print(f"💾 KV cache offload → {cache_device} ({cache_reason})")
@@ -810,7 +838,7 @@ class FlashVSRService:
         )
 
         # 可选：流水线并行（多 GPU）
-        pp_devices, pp_split = self._parse_pipeline_parallel()
+        pp_devices, pp_split = parse_pipeline_parallel()
 
         default_kwargs: dict[str, Any] = {}
 
@@ -872,87 +900,3 @@ class FlashVSRService:
                 f"模型变体 {value} 缺少必要权重，请参考 README 下载 FlashVSR {settings.FLASHVSR_VERSION} 权重"
             )
         return value
-
-    def _decide_cache_offload_device(self, device: str) -> tuple[Optional[str], Optional[str]]:
-        """
-        Determine whether to spill streaming KV caches to CPU, returning (device, reason).
-        """
-        mode = (settings.FLASHVSR_CACHE_OFFLOAD or "auto").strip().lower()
-        allowed = {"auto", "cpu", "none", "off", "disable"}
-        if mode not in allowed:
-            raise ValueError(
-                f"无效的 FLASHVSR_CACHE_OFFLOAD 配置: {settings.FLASHVSR_CACHE_OFFLOAD}. "
-                f"可选值: {', '.join(sorted(allowed))}"
-            )
-        if not device.startswith("cuda"):
-            return None, None
-
-        # Query the correct GPU properties if a specific index is requested
-        gpu_index = 0
-        try:
-            if ":" in device:
-                gpu_index = int(device.split(":", 1)[1])
-        except Exception:
-            gpu_index = 0
-        total_gb = torch.cuda.get_device_properties(gpu_index).total_memory / (1024 ** 3)
-        threshold = settings.FLASHVSR_CACHE_OFFLOAD_AUTO_THRESHOLD_GB
-
-        if mode == "cpu":
-            return "cpu", "forced via FLASHVSR_CACHE_OFFLOAD=cpu"
-        if mode == "auto" and total_gb <= threshold:
-            return (
-                "cpu",
-                f"auto: GPU {total_gb:.1f} GB ≤ {threshold:.1f} GB",
-            )
-        return None, None
-
-    def _resolve_device(self) -> str:
-        """Resolve target torch device from settings and availability."""
-        override = (settings.FLASHVSR_DEVICE or "").strip()
-        if override:
-            if override.startswith("cuda"):
-                if torch.cuda.is_available():
-                    # Optionally set current device if index provided
-                    try:
-                        if ":" in override:
-                            idx = int(override.split(":", 1)[1])
-                            torch.cuda.set_device(idx)
-                    except Exception:
-                        pass
-                    return override
-                return "cpu"
-            if override == "cpu":
-                return "cpu"
-        return "cuda" if torch.cuda.is_available() else "cpu"
-
-    def _parse_pipeline_parallel(self) -> tuple[Optional[list[str]], Optional[int]]:
-        """Parse pipeline-parallel settings from env Settings.
-        Returns (devices, split_index) or (None, None) if disabled.
-        """
-        raw = (settings.FLASHVSR_PP_DEVICES or "").strip()
-        if not raw:
-            return None, None
-        parts = [p.strip() for p in raw.split(",") if p.strip()]
-        devices: list[str] = []
-        for p in parts:
-            if p.startswith("cuda"):
-                devices.append(p)
-            elif p.isdigit():
-                devices.append(f"cuda:{p}")
-            else:
-                # fallback: accept 'cpu' or unknown
-                devices.append(p)
-        # Need at least 2 devices
-        if len(devices) < 2:
-            return None, None
-
-        split_raw = (settings.FLASHVSR_PP_SPLIT_BLOCK or "auto").strip().lower()
-        split_index: Optional[int]
-        if split_raw in ("", "auto"):
-            split_index = None
-        else:
-            try:
-                split_index = int(split_raw)
-            except Exception:
-                split_index = None
-        return devices, split_index

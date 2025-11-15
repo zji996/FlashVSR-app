@@ -1,20 +1,15 @@
-import types
-import os
-import time
 from typing import Optional, Callable
 
 import torch
-import numpy as np
-from einops import rearrange
-from PIL import Image
 from tqdm import tqdm
 
 from ..models import ModelManager
 from ..models.wan_video_dit import WanModel, RMSNorm, sinusoidal_embedding_1d, build_3d_freqs
-from ..models.wan_video_vae import WanVideoVAE, RMS_norm, CausalConv3d, Upsample
+from ..models.wan_video_vae import WanVideoVAE
 from ..schedulers.flow_match import FlowMatchScheduler
 from .base import BasePipeline
 from .flashvsr_color import TorchColorCorrectorWavelet
+from .wan_video_runtime import model_fn_wan_video
 
 
 # -----------------------------
@@ -30,7 +25,6 @@ class FlashVSRTinyLongPipeline(BasePipeline):
         self.model_names = ['dit', 'vae']
         self.height_division_factor = 16
         self.width_division_factor = 16
-        self.use_unified_sequence_parallel = False
         self.prompt_emb_posi = None
         self.ColorCorrector = TorchColorCorrectorWavelet(levels=5)
 
@@ -71,13 +65,11 @@ class FlashVSRTinyLongPipeline(BasePipeline):
         self.vae = model_manager.fetch_model("wan_video_vae")
 
     @staticmethod
-    def from_model_manager(model_manager: ModelManager, torch_dtype=None, device=None, use_usp=False):
+    def from_model_manager(model_manager: ModelManager, torch_dtype=None, device=None):
         if device is None: device = model_manager.device
         if torch_dtype is None: torch_dtype = model_manager.torch_dtype
         pipe = FlashVSRTinyLongPipeline(device=device, torch_dtype=torch_dtype)
         pipe.fetch_models(model_manager)
-        # 可选：统一序列并行入口（此处默认关闭）
-        pipe.use_unified_sequence_parallel = False
         return pipe
 
     def denoising_model(self):
@@ -165,9 +157,6 @@ class FlashVSRTinyLongPipeline(BasePipeline):
         self.scheduler.set_timesteps(1, denoising_strength=1.0, shift=5.0)
         self.load_models_to_device([])
 
-    def prepare_unified_sequence_parallel(self):
-        return {"use_unified_sequence_parallel": self.use_unified_sequence_parallel}
-
     def prepare_extra_input(self, latents=None):
         return {}
 
@@ -205,17 +194,13 @@ class FlashVSRTinyLongPipeline(BasePipeline):
         tiled=True,
         tile_size=(60, 104),
         tile_stride=(30, 52),
-        tea_cache_l1_thresh=None,
-        tea_cache_model_id="Wan2.1-T2V-14B",
-        progress_bar_cmd=tqdm,
-        progress_bar_st=None,
         LQ_video=None,
         is_full_block=False,
-        if_buffer=False,
+        if_buffer: bool = False,
         topk_ratio=2.0,
         kv_ratio=3.0,
-        local_range = 9,
-        color_fix = True,
+        local_range=9,
+        color_fix=True,
         frame_chunk_handler: Optional[Callable[[torch.Tensor], None]] = None,
     ):
         # 只接受 cfg=1.0（与原代码一致）
@@ -237,8 +222,6 @@ class FlashVSRTinyLongPipeline(BasePipeline):
             print(f"Only `num_frames % 4 != 1` is acceptable. We round it up to {num_frames}.")
 
         # Tiler 参数
-        tiler_kwargs = {"tiled": tiled, "tile_size": tile_size, "tile_stride": tile_stride}
-
         color_chunk_size = None
         if color_fix:
             color_chunk_size = self._suggest_color_chunk_size(height, width)
@@ -1093,8 +1076,6 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                     x=cur_latents,
                     timestep=self.timestep,
                     context=None,
-                    tea_cache=None,
-                    use_unified_sequence_parallel=False,
                     LQ_latents=LQ_latents,
                     is_full_block=is_full_block,
                     is_stream=is_stream,
@@ -1153,241 +1134,3 @@ class FlashVSRTinyLongPipeline(BasePipeline):
             frames = torch.cat(frames_total, dim=2)
 
         return frames[0]
-
-
-# -----------------------------
-# TeaCache（保留原逻辑；此处默认不启用）
-# -----------------------------
-class TeaCache:
-    def __init__(self, num_inference_steps, rel_l1_thresh, model_id):
-        self.num_inference_steps = num_inference_steps
-        self.step = 0
-        self.accumulated_rel_l1_distance = 0
-        self.previous_modulated_input = None
-        self.rel_l1_thresh = rel_l1_thresh
-        self.previous_residual = None
-        self.previous_hidden_states = None
-        
-        self.coefficients_dict = {
-            "Wan2.1-T2V-1.3B": [-5.21862437e+04, 9.23041404e+03, -5.28275948e+02, 1.36987616e+01, -4.99875664e-02],
-            "Wan2.1-T2V-14B":  [-3.03318725e+05, 4.90537029e+04, -2.65530556e+03, 5.87365115e+01, -3.15583525e-01],
-            "Wan2.1-I2V-14B-480P": [2.57151496e+05, -3.54229917e+04,  1.40286849e+03, -1.35890334e+01, 1.32517977e-01],
-            "Wan2.1-I2V-14B-720P":  [8.10705460e+03,  2.13393892e+03, -3.72934672e+02,  1.66203073e+01, -4.17769401e-02],
-        }
-        if model_id not in self.coefficients_dict:
-            supported_model_ids = ", ".join([i for i in self.coefficients_dict])
-            raise ValueError(f"{model_id} is not a supported TeaCache model id. Please choose a valid model id in ({supported_model_ids}).")
-        self.coefficients = self.coefficients_dict[model_id]
-
-    def check(self, dit: WanModel, x, t_mod):
-        modulated_inp = t_mod.clone()
-        if self.step == 0 or self.step == self.num_inference_steps - 1:
-            should_calc = True
-            self.accumulated_rel_l1_distance = 0
-        else:
-            coefficients = self.coefficients
-            rescale_func = np.poly1d(coefficients)
-            self.accumulated_rel_l1_distance += rescale_func(((modulated_inp-self.previous_modulated_input).abs().mean() / self.previous_modulated_input.abs().mean()).cpu().item())
-            should_calc = not (self.accumulated_rel_l1_distance < self.rel_l1_thresh)
-            if should_calc:
-                self.accumulated_rel_l1_distance = 0
-        self.previous_modulated_input = modulated_inp
-        self.step = (self.step + 1) % self.num_inference_steps
-        if should_calc:
-            self.previous_hidden_states = x.clone()
-        return not should_calc
-
-    def store(self, hidden_states):
-        self.previous_residual = hidden_states - self.previous_hidden_states
-        self.previous_hidden_states = None
-
-    def update(self, hidden_states):
-        hidden_states = hidden_states + self.previous_residual
-        return hidden_states
-
-
-# -----------------------------
-# 简化版模型前向封装（无 vace / 无 motion_controller）
-# -----------------------------
-def model_fn_wan_video(
-    dit: WanModel,
-    x: torch.Tensor,
-    timestep: torch.Tensor,
-    context: torch.Tensor,
-    tea_cache: Optional[TeaCache] = None,
-    use_unified_sequence_parallel: bool = False,
-    LQ_latents: Optional[torch.Tensor] = None,
-    is_full_block: bool = False,
-    is_stream: bool = False,
-    pre_cache_k: Optional[list[torch.Tensor]] = None,
-    pre_cache_v: Optional[list[torch.Tensor]] = None,
-    topk_ratio: float = 2.0,
-    kv_ratio: float = 3.0,
-    cur_process_idx: int = 0,
-    t_mod : torch.Tensor = None,
-    t : torch.Tensor = None,
-    local_range: int = 9,
-    cache_offload_device: Optional[str] = None,
-    pp_devices: Optional[list[str]] = None,
-    pp_split_idx: Optional[int] = None,
-    **kwargs,
-):
-    # patchify
-    x, (f, h, w) = dit.patchify(x)
-    compute_device = x.device
-    origin_device = x.device
-
-    def _prepare_cache(cache_list, idx):
-        if cache_list is None:
-            return None
-        tensor = cache_list[idx]
-        if tensor is None:
-            return None
-        if tensor.device == compute_device:
-            return tensor
-        return tensor.to(compute_device, non_blocking=False)
-
-    def _offload_cache(tensor):
-        if tensor is None or cache_offload_device is None:
-            return tensor
-        if tensor.device == cache_offload_device:
-            return tensor
-        non_blocking = cache_offload_device != "cpu"
-        return tensor.to(cache_offload_device, non_blocking=non_blocking)
-
-    win = (2, 8, 8)
-    seqlen = f // win[0]
-    local_num = seqlen
-    window_size = win[0] * h * w // 128
-    square_num = window_size * window_size
-    topk = int(square_num * topk_ratio) - 1
-    kv_len = int(kv_ratio)
-
-    # RoPE 位置（分段），并预先在两个设备上各保存一份以避免每层重复搬运
-    head_dim = dit.blocks[0].self_attn.head_dim
-    if cur_process_idx == 0:
-        freqs_cpu, dit.freqs = build_3d_freqs(
-            getattr(dit, "freqs", None),
-            head_dim=head_dim,
-            f=f,
-            h=h,
-            w=w,
-            device="cpu",
-            f_offset=0,
-        )
-    else:
-        freqs_cpu, dit.freqs = build_3d_freqs(
-            getattr(dit, "freqs", None),
-            head_dim=head_dim,
-            f=f,
-            h=h,
-            w=w,
-            device="cpu",
-            f_offset=4 + cur_process_idx * 2,
-        )
-    # Default single-device
-    freqs = freqs_cpu.to(x.device, non_blocking=True)
-    # If pp enabled, pre-stage on both devices
-    freqs_dev0 = freqs
-    freqs_dev1 = None
-    t_mod_dev0 = t_mod
-    t_mod_dev1 = None
-    if pp_devices is not None and isinstance(pp_devices, (list, tuple)) and len(pp_devices) >= 2:
-        dev0, dev1 = pp_devices[0], pp_devices[-1]
-        if str(torch.device(dev0)) != str(freqs.device):
-            freqs_dev0 = freqs_cpu.to(dev0, non_blocking=True)
-        freqs_dev1 = freqs_cpu.to(dev1, non_blocking=True) if str(torch.device(dev1)) != str(freqs.device) else freqs
-        # pre-stage time modulation
-        t_mod_dev0 = t_mod.to(dev0, non_blocking=True) if str(torch.device(dev0)) != str(t_mod.device) else t_mod
-        t_mod_dev1 = t_mod.to(dev1, non_blocking=True) if str(torch.device(dev1)) != str(t_mod.device) else t_mod
-
-    # TeaCache（默认不启用）
-    tea_cache_update = tea_cache.check(dit, x, t_mod) if tea_cache is not None else False
-
-    # 统一序列并行（此处默认关闭）
-    if use_unified_sequence_parallel:
-        import torch.distributed as dist
-        from xfuser.core.distributed import (get_sequence_parallel_rank,
-                                             get_sequence_parallel_world_size,
-                                             get_sp_group)
-        if dist.is_initialized() and dist.get_world_size() > 1:
-            x = torch.chunk(x, get_sequence_parallel_world_size(), dim=1)[get_sequence_parallel_rank()]
-
-    # Pipeline-parallel planning (optional)
-    pp_enabled = pp_devices is not None and isinstance(pp_devices, (list, tuple)) and len(pp_devices) >= 2
-    if pp_enabled:
-        dev0, dev1 = pp_devices[0], pp_devices[-1]
-        if pp_split_idx is None:
-            pp_split_idx = len(dit.blocks) // 2 - 1
-            pp_split_idx = max(0, min(pp_split_idx, len(dit.blocks) - 2))
-
-    # Block 堆叠
-    if tea_cache_update:
-        x = tea_cache.update(x)
-    else:
-        for block_id, block in enumerate(dit.blocks):
-            # Select device for this block if pp is enabled
-            if pp_enabled:
-                target_device = dev0 if block_id <= pp_split_idx else dev1
-                if str(x.device) != str(torch.device(target_device)):
-                    x = x.to(target_device, non_blocking=False)
-                # keep caches / helper tensors on the same device
-                compute_device = x.device
-                # Select pre-staged tensors for this device
-                freqs_cur = freqs_dev0 if str(compute_device) == str(torch.device(dev0)) else (freqs_dev1 if freqs_dev1 is not None else freqs.to(compute_device, non_blocking=True))
-                t_mod_cur = t_mod_dev0 if str(compute_device) == str(torch.device(dev0)) else (t_mod_dev1 if t_mod_dev1 is not None else t_mod.to(compute_device, non_blocking=True))
-                # ensure block is on the right device (fallback safety)
-                try:
-                    p = next(block.parameters())
-                    if p.device != compute_device:
-                        block.to(compute_device)
-                except StopIteration:
-                    pass
-            else:
-                freqs_cur = freqs
-                t_mod_cur = t_mod
-            if LQ_latents is not None and block_id < len(LQ_latents):
-                addend = LQ_latents[block_id]
-                if pp_enabled and addend.device != x.device:
-                    addend = addend.to(x.device, non_blocking=False)
-                x = x + addend
-            cache_k = _prepare_cache(pre_cache_k, block_id) if pre_cache_k is not None else None
-            cache_v = _prepare_cache(pre_cache_v, block_id) if pre_cache_v is not None else None
-            x, last_pre_cache_k, last_pre_cache_v = block(
-                x, context, t_mod_cur, freqs_cur, f, h, w,
-                local_num, topk,
-                block_id=block_id,
-                kv_len=kv_len,
-                is_full_block=is_full_block,
-                is_stream=is_stream,
-                pre_cache_k=cache_k,
-                pre_cache_v=cache_v,
-                local_range = local_range,
-            )
-            if pre_cache_k is not None: pre_cache_k[block_id] = _offload_cache(last_pre_cache_k)
-            if pre_cache_v is not None: pre_cache_v[block_id] = _offload_cache(last_pre_cache_v)
-
-    # Final head on the device of last stage when pp is enabled
-    if pp_enabled:
-        last_device = dev1
-        if str(x.device) != str(torch.device(last_device)):
-            x = x.to(last_device, non_blocking=False)
-        try:
-            if next(dit.head.parameters()).device != x.device:
-                dit.head.to(x.device)
-        except StopIteration:
-            pass
-        t = t.to(x.device, non_blocking=False)
-        x = dit.head(x, t)
-    else:
-        x = dit.head(x, t)
-    if use_unified_sequence_parallel:
-        import torch.distributed as dist
-        from xfuser.core.distributed import get_sp_group
-        if dist.is_initialized() and dist.get_world_size() > 1:
-            x = get_sp_group().all_gather(x, dim=1)
-    x = dit.unpatchify(x, (f, h, w))
-    # Move result back to the origin device so caller tensors match
-    if pp_enabled and str(x.device) != str(origin_device):
-        x = x.to(origin_device, non_blocking=False)
-    return x, pre_cache_k, pre_cache_v
