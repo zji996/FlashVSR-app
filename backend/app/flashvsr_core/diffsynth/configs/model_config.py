@@ -1,11 +1,7 @@
 from typing_extensions import Literal, TypeAlias
 
 from ..models.wan_video_dit import WanModel
-from ..models.wan_video_text_encoder import WanTextEncoder
-from ..models.wan_video_image_encoder import WanImageEncoder
 from ..models.wan_video_vae import WanVideoVAE
-from ..models.wan_video_motion_controller import WanMotionControllerModel
-from ..models.wan_video_vace import VaceWanModel
 
 
 # -----------------------------
@@ -24,16 +20,11 @@ model_loader_configs = [
     (None, "349723183fc063b2bfc10bb2835cf677", ["wan_video_dit"], [WanModel], "civitai"),
     (None, "efa44cddf936c70abd0ea28b6cbe946c", ["wan_video_dit"], [WanModel], "civitai"),
     (None, "3ef3b1f8e1dab83d5b71fd7b617f859f", ["wan_video_dit"], [WanModel], "civitai"),
-    # WanVideo DiT + VACE variant
-    (None, "a61453409b67cd3246cf0c3bebad47ba", ["wan_video_dit", "wan_video_vace"], [WanModel, VaceWanModel], "civitai"),
     # Diffusers-format WanVideo DiT
     (None, "cb104773c6c2cb6df4f9529ad5c60d0b", ["wan_video_dit"], [WanModel], "diffusers"),
-    # Text encoder / image encoder / VAE / motion controller (kept for completeness)
-    (None, "9c8818c2cbea55eca56c7b447df170da", ["wan_video_text_encoder"], [WanTextEncoder], "civitai"),
-    (None, "5941c53e207d62f20f9025686193c40b", ["wan_video_image_encoder"], [WanImageEncoder], "civitai"),
+    # WanVideo VAE (Tiny Long decoder)
     (None, "1378ea763357eea97acdef78e65d6d96", ["wan_video_vae"], [WanVideoVAE], "civitai"),
     (None, "ccc42284ea13e1ad04693284c7a09be6", ["wan_video_vae"], [WanVideoVAE], "civitai"),
-    (None, "dbd5ec76bbf977983f972c151d545389", ["wan_video_motion_controller"], [WanMotionControllerModel], "civitai"),
 ]
 
 # For the backend service we do not auto-load HuggingFace or patch models,
@@ -57,4 +48,3 @@ Preset_model_id: TypeAlias = Literal[
 # Downloader expects these dicts to exist; keep them empty to avoid unused downloads.
 preset_models_on_huggingface: dict[Preset_model_id, object] = {}
 preset_models_on_modelscope: dict[Preset_model_id, object] = {}
-
