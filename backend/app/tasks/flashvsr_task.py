@@ -109,13 +109,13 @@ def process_video_task(self, task_id: str):
             progress = (processed_frames / total_frames * 100) if total_frames > 0 else 0
             remaining_frames = total_frames - processed_frames
             estimated_time = int(remaining_frames * avg_frame_time) if avg_frame_time > 0 else None
-            
+
             task.progress = progress
             task.processed_frames = processed_frames
             task.total_frames = total_frames
             task.estimated_time_remaining = estimated_time
             db.commit()
-            
+
             # 更新Celery任务状态
             self.update_state(
                 state='PROGRESS',
@@ -172,17 +172,17 @@ def process_video_task(self, task_id: str):
             "status": "completed",
             "output_path": output_path,
         }
-    
+
     except Exception as e:
-        # 更新任务状态为失败
+        # 更新任务状态为失败（不再在此处自动导出部分结果）
         print(f"❌ 任务失败: {task_id}, 错误: {str(e)}")
-        
+
         task = db.query(Task).filter(Task.id == UUID(task_id)).first()
         if task:
             task.status = TaskStatus.FAILED
             task.error_message = str(e)
             db.commit()
-        
+
         raise
     
     finally:

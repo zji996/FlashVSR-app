@@ -3,13 +3,15 @@
  */
 
 import { useParams, Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { tasksApi } from '../api/tasks';
 import { MODEL_VARIANT_LABELS, TaskStatus } from '../types';
 import ProgressBar from '../components/ProgressBar';
 
 export default function TaskDetailPage() {
   const { taskId } = useParams<{ taskId: string }>();
+
+  const queryClient = useQueryClient();
 
   const { data: task, isLoading } = useQuery({
     queryKey: ['task', taskId],
@@ -19,6 +21,18 @@ export default function TaskDetailPage() {
       const task = query.state.data;
       // 如果任务正在处理，每2秒刷新一次
       return task?.status === TaskStatus.PROCESSING ? 2000 : false;
+    },
+  });
+
+  const exportMutation = useMutation({
+    mutationFn: async () => {
+      if (!taskId) return;
+      await tasksApi.exportFromChunks(taskId);
+    },
+    onSuccess: () => {
+      if (taskId) {
+        queryClient.invalidateQueries({ queryKey: ['task', taskId] });
+      }
     },
   });
 
@@ -223,10 +237,17 @@ export default function TaskDetailPage() {
           </div>
         )}
 
-        {/* 视频预览 */}
-        {task.status === TaskStatus.COMPLETED && task.output_file_name && (
+        {/* 视频预览：完整结果或部分结果 */}
+        {task.output_file_name && (
           <div className="mb-8">
-            <h3 className="text-lg font-semibold mb-4">结果预览</h3>
+            <h3 className="text-lg font-semibold mb-4">
+              {task.status === TaskStatus.COMPLETED
+                ? '结果预览'
+                : task.status === TaskStatus.FAILED &&
+                  task.error_message?.includes('已导出部分结果')
+                ? '部分结果预览'
+                : '结果预览'}
+            </h3>
             <div className="aspect-video bg-black rounded-lg overflow-hidden">
               <video
                 src={tasksApi.getResultUrl(task.id)}
@@ -240,24 +261,41 @@ export default function TaskDetailPage() {
         )}
 
         {/* 操作按钮 */}
-        <div className="flex gap-4">
+        <div className="flex flex-col md:flex-row gap-4">
+          {(task.status === TaskStatus.COMPLETED ||
+            (task.status === TaskStatus.FAILED &&
+              task.error_message?.includes('已导出部分结果') &&
+              task.output_file_name)) && (
+            <a
+              href={tasksApi.getResultUrl(task.id)}
+              download
+              className="btn btn-primary flex-1"
+            >
+              {task.status === TaskStatus.COMPLETED
+                ? '下载处理结果'
+                : '下载部分结果'}
+            </a>
+          )}
+
           {task.status === TaskStatus.COMPLETED && (
-            <>
-              <a
-                href={tasksApi.getResultUrl(task.id)}
-                download
-                className="btn btn-primary flex-1"
-              >
-                下载处理结果
-              </a>
-              <a
-                href={tasksApi.getInputUrl(task.id)}
-                download
-                className="btn btn-secondary"
-              >
-                下载原始视频
-              </a>
-            </>
+            <a
+              href={tasksApi.getInputUrl(task.id)}
+              download
+              className="btn btn-secondary"
+            >
+              下载原始视频
+            </a>
+          )}
+
+          {task.status !== TaskStatus.COMPLETED && (
+            <button
+              type="button"
+              onClick={() => exportMutation.mutate()}
+              disabled={exportMutation.isPending}
+              className="btn btn-warning flex-1"
+            >
+              {exportMutation.isPending ? '正在导出当前进度...' : '导出当前进度（基于已完成分片）'}
+            </button>
           )}
         </div>
       </div>

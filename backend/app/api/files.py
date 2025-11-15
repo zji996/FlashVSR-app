@@ -27,11 +27,18 @@ def download_result(
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     
-    if task.status != TaskStatus.COMPLETED:
-        raise HTTPException(status_code=400, detail="任务尚未完成")
-    
     if not task.output_file_path or not os.path.exists(task.output_file_path):
         raise HTTPException(status_code=404, detail="结果文件不存在")
+
+    # 允许两种情况下载：
+    # 1. 任务正常完成（COMPLETED）——完整结果；
+    # 2. 任务失败但已生成部分结果（FAILED + error_message 中包含 “已导出部分结果”）。
+    if task.status == TaskStatus.COMPLETED:
+        pass
+    elif task.status == TaskStatus.FAILED and task.error_message and "已导出部分结果" in task.error_message:
+        pass
+    else:
+        raise HTTPException(status_code=400, detail="任务尚未完成或没有可用的部分结果")
     
     return FileResponse(
         path=task.output_file_path,
@@ -50,9 +57,6 @@ def get_result_preview(
 
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-
-    if task.status != TaskStatus.COMPLETED:
-        raise HTTPException(status_code=400, detail="任务尚未完成")
 
     if not task.output_file_path or not os.path.exists(task.output_file_path):
         raise HTTPException(status_code=404, detail="结果文件不存在")

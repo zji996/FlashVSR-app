@@ -20,8 +20,8 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
-    task_time_limit=3600 * 6,  # 6小时超时
-    task_soft_time_limit=3600 * 5,  # 5小时软超时
+    # 对于超长视频推理，取消统一的任务时间上限，由调用方自行控制。
+    # 如需重新启用，可在此处配置 task_time_limit / task_soft_time_limit。
     worker_prefetch_multiplier=1,  # 一次只取一个任务
     worker_max_tasks_per_child=1,  # 每个worker处理1个任务后重启（释放GPU内存）
 )

@@ -63,6 +63,16 @@ export const tasksApi = {
   },
 
   /**
+   * 基于磁盘分片导出当前可恢复的部分结果
+   */
+  async exportFromChunks(taskId: string): Promise<TaskProgressResponse> {
+    const response = await apiClient.post<TaskProgressResponse>(
+      `/api/tasks/${taskId}/export_from_chunks`
+    );
+    return response.data;
+  },
+
+  /**
    * 删除任务
    */
   async deleteTask(taskId: string): Promise<void> {

@@ -383,13 +383,39 @@ class FlashVSRTinyLongPipeline(BasePipeline):
         if color_fix:
             color_chunk_size = self._suggest_color_chunk_size(height, width)
 
-        # 初始化噪声
-        if if_buffer:
-            noise = self.generate_noise((1, 16, (num_frames - 1) // 4, height//8, width//8), seed=seed, device=self.device, dtype=self.torch_dtype)
-        else:
-            noise = self.generate_noise((1, 16, (num_frames - 1) // 4 + 1, height//8, width//8), seed=seed, device=self.device, dtype=self.torch_dtype)
-        # noise = noise.to(dtype=self.torch_dtype, device=self.device)
-        latents = noise
+        # 初始化噪声：按窗口生成，避免为整个长视频一次性分配巨大的 latent 张量
+        def _make_latents_window(step_index: int) -> torch.Tensor:
+            """
+            为当前窗口生成噪声 latent。
+
+            原实现使用一个形状为 (1, 16, (num_frames - 1)//4, H/8, W/8) 的全局 latent，
+            然后在每个窗口中切片：
+              - 第 0 个窗口使用前 6 帧；
+              - 之后每个窗口使用 2 帧，并依次向后滑动。
+            这会导致在超长视频上分配 O(T) 级别显存。
+
+            这里改为按窗口即时采样：
+              - 第 0 个窗口生成 6 帧 latent；
+              - 之后每个窗口生成 2 帧 latent；
+            这样最大显存占用只与分辨率相关，而与视频总帧数无关。
+            """
+            if step_index == 0:
+                frames = 6
+            else:
+                frames = 2
+
+            if seed is None:
+                window_seed = None
+            else:
+                # 保持可复现：不同窗口使用稳定偏移的种子
+                window_seed = seed + step_index
+
+            return self.generate_noise(
+                (1, 16, frames, height // 8, width // 8),
+                seed=window_seed,
+                device=self.device,
+                dtype=self.torch_dtype,
+            )
 
         process_total_num = (num_frames - 1) // 8 - 2
         is_stream = True
@@ -514,7 +540,7 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                                 for layer_idx in range(len(LQ_latents)):
                                     LQ_latents[layer_idx] = torch.cat([LQ_latents[layer_idx], cur[layer_idx]], dim=1)
                         LQ_cur_idx = (inner_loop_num-1)*4-3
-                        cur_latents = latents[:, :, :6, :, :]
+                        cur_latents = _make_latents_window(cur_process_idx)
                     else:
                         LQ_latents = None
                         inner_loop_num = 2
@@ -537,7 +563,7 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                                 for layer_idx in range(len(LQ_latents)):
                                     LQ_latents[layer_idx] = torch.cat([LQ_latents[layer_idx], cur[layer_idx]], dim=1)
                         LQ_cur_idx = cur_process_idx*8+21+(inner_loop_num-2)*4
-                        cur_latents = latents[:, :, 4+cur_process_idx*2:6+cur_process_idx*2, :, :]
+                        cur_latents = _make_latents_window(cur_process_idx)
 
                     # patchify and RoPE per-device for this window
                     x_tokens, (f, h, w) = self.dit.patchify(cur_latents)
@@ -733,7 +759,7 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                             for layer_idx in range(len(LQ_latents)):
                                 LQ_latents[layer_idx] = torch.cat([LQ_latents[layer_idx], cur[layer_idx]], dim=1)
                     LQ_cur_idx = (inner_loop_num-1)*4-3
-                    cur_latents = latents[:, :, :6, :, :]
+                    cur_latents = _make_latents_window(cur_process_idx)
                 else:
                     LQ_latents = None
                     inner_loop_num = 2
@@ -756,7 +782,7 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                             for layer_idx in range(len(LQ_latents)):
                                 LQ_latents[layer_idx] = torch.cat([LQ_latents[layer_idx], cur[layer_idx]], dim=1)
                     LQ_cur_idx = cur_process_idx*8+21+(inner_loop_num-2)*4
-                    cur_latents = latents[:, :, 4+cur_process_idx*2:6+cur_process_idx*2, :, :]
+                    cur_latents = _make_latents_window(cur_process_idx)
 
                 # 推理（无 motion_controller / vace）
                 noise_pred_posi, pre_cache_k, pre_cache_v = model_fn_wan_video(

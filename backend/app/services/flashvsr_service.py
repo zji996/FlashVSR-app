@@ -171,26 +171,13 @@ class FlashVSRService:
             pipeline_kwargs["frame_chunk_handler"] = chunk_session.handle_chunk
 
         cleanup_handle = video_tensor if hasattr(video_tensor, "cleanup") else None
-        partial_output_path: Optional[str] = None
         try:
             with torch.inference_mode():
                 output_video = pipeline(**pipeline_kwargs)
         except Exception as exc:
+            # 出错时不再自动导出部分结果，由上层根据 chunks_* 目录显式触发导出。
             if chunk_session:
-                try:
-                    partial_path = chunk_session.finalize_partial()
-                except Exception:
-                    chunk_session.abort()
-                    raise
-                if partial_path:
-                    partial_output_path = str(partial_path)
-                else:
-                    chunk_session.abort()
-            if partial_output_path:
-                print(f"⚠️ 已导出部分结果: {partial_output_path}")
-                raise RuntimeError(
-                    f"{exc}（已导出部分结果: {partial_output_path}）"
-                ) from exc
+                chunk_session.abort()
             raise
         finally:
             if cleanup_handle is not None:
@@ -509,6 +496,44 @@ class FlashVSRService:
                 paths[0].parent.rmdir()
             except OSError:
                 pass
+
+    def export_partial_from_chunks(self, expected_output_path: str) -> Optional[Path]:
+        """
+        基于磁盘上已有的分片文件合并并导出一个部分结果。
+
+        - 主要用于任务已经结束（超时 / 崩溃）后，根据 chunks_* 目录中现有的分片恢复进度。
+        - 不依赖仍在内存中的 ChunkedExportSession。
+        """
+        base_name = Path(expected_output_path).stem
+        root = settings.FLASHVSR_CHUNKED_SAVE_TMP_DIR
+        if not root.exists():
+            return None
+
+        best_dir: Optional[Path] = None
+        best_chunks: list[Path] = []
+
+        for sub in root.iterdir():
+            if not sub.is_dir() or not sub.name.startswith("chunks_"):
+                continue
+            candidates = sorted(sub.glob(f"{base_name}_chunk_*.mp4"))
+            if candidates and len(candidates) > len(best_chunks):
+                best_dir = sub
+                best_chunks = candidates
+
+        if not best_dir or not best_chunks:
+            return None
+
+        # 为避免最后一个未正常关闭的分片导致合并失败，保守地丢弃最后一个。
+        usable = best_chunks[:-1] if len(best_chunks) > 1 else best_chunks
+        if not usable:
+            return None
+
+        partial_path = Path(expected_output_path).with_name(
+            f"{Path(expected_output_path).stem}_partial{Path(expected_output_path).suffix}"
+        )
+        # 使用与正常流程相同的合并逻辑，并在完成后清理这些分片。
+        self._merge_video_chunks(usable, str(partial_path), audio_path=None)
+        return partial_path
     @staticmethod
     def _mux_audio(video_path: str, audio_path: str, output_path: str) -> None:
         """Mux existing audio into the given video file."""

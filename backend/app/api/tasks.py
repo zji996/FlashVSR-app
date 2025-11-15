@@ -12,7 +12,9 @@ from sqlalchemy import desc
 from pydantic import ValidationError
 
 from app.core.database import get_db
+from app.core.celery_app import celery_app
 from app.models.task import Task, TaskStatus
+from app.services.flashvsr_service import FlashVSRService
 from app.schemas.task import (
     TaskResponse,
     TaskListResponse,
@@ -239,3 +241,72 @@ def delete_task(
     db.commit()
     
     return None
+
+
+@router.post("/{task_id}/export_from_chunks", response_model=TaskProgressResponse)
+def export_from_chunks(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+):
+    """
+    基于磁盘上的 chunks_* 分片目录，尽可能导出当前可恢复的部分结果。
+
+    仅依赖已写入磁盘的分片文件，不再尝试优雅取消正在运行的任务。
+    适用于任务已结束（超时 / 崩溃等）但仍保留中间分片的情况。
+    """
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    if not task.celery_task_id:
+        raise HTTPException(status_code=400, detail="任务缺少 Celery 任务ID，无法导出当前进度")
+
+    async_result = celery_app.AsyncResult(task.celery_task_id)
+
+    # 仅在 Celery 任务已结束时恢复分片；仍在运行中的任务需要等待完成或手动停止。
+    if not async_result.ready():
+        raise HTTPException(status_code=400, detail="任务仍在处理中，请在任务结束后再尝试导出当前进度")
+
+    # 尝试基于已有分片恢复部分结果。
+    # 计算期望输出路径（与后台任务一致的命名规则）。
+    expected_output_name = task.output_file_name or f"{Path(task.input_file_name).stem}_flashvsr.mp4"
+    expected_output_path = str(settings.RESULT_DIR / expected_output_name)
+
+    service = FlashVSRService()
+    partial = service.export_partial_from_chunks(expected_output_path)
+
+    if not partial:
+        task.status = TaskStatus.FAILED
+        if not task.error_message:
+            task.error_message = "未找到可用于恢复的分片文件，无法导出当前进度。"
+        db.commit()
+        return TaskProgressResponse(
+            task_id=task.id,
+            status=task.status,
+            progress=task.progress,
+            processed_frames=task.processed_frames,
+            total_frames=task.total_frames,
+            estimated_time_remaining=task.estimated_time_remaining,
+            error_message=task.error_message,
+        )
+
+    # 记录部分结果路径
+    task.output_file_path = str(partial)
+    task.output_file_name = partial.name
+    task.status = TaskStatus.FAILED
+    msg = task.error_message or ""
+    extra = f"已导出部分结果: {partial}"
+    if extra not in msg:
+        msg = f"{msg}；{extra}" if msg else extra
+    task.error_message = msg
+    db.commit()
+
+    return TaskProgressResponse(
+        task_id=task.id,
+        status=task.status,
+        progress=task.progress,
+        processed_frames=task.processed_frames,
+        total_frames=task.total_frames,
+        estimated_time_remaining=task.estimated_time_remaining,
+        error_message=task.error_message,
+    )
