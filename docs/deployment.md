@@ -1,29 +1,75 @@
 # 部署指南
 
-部署分为本地开发环境与 Docker Compose 全栈两条路径，关键依赖为 Python 3.11+、Node 20+、Git LFS（或手动下载权重），以及可选的 NVIDIA Container Toolkit。
+部署分为本地开发环境与 Docker Compose 全栈两条路径，关键依赖为 Python 3.12+、Node 20+、Git LFS（或手动下载权重），以及可选的 NVIDIA Container Toolkit。
 
 ## 本地开发流程
 
 1. **安装依赖**
    ```bash
-   uv --project backend sync        # 安装后端 Python 依赖
-   cd frontend && pnpm install      # 安装前端依赖
+   # 1）在 backend 目录下手动创建并初始化虚拟环境（推荐 3.12）
+   cd backend
+   uv venv --python 3.12            # 创建 backend/.venv
+   source .venv/bin/activate        # 激活虚拟环境
+   uv sync                          # 安装后端依赖到当前 venv
+
+   # 2）安装前端依赖
+   cd ../frontend
+   pnpm install
    ```
-1. **构建 Block-Sparse-Attention CUDA 扩展（必需）**
+
+   上面的命令会：
+
+   - 在 `backend/` 下创建一个显式的虚拟环境目录 `backend/.venv`；
+   - 使用 `backend/pyproject.toml` 中声明的依赖，将后端运行/开发依赖安装到该虚拟环境中；
+   - 前端依赖安装在 `frontend/node_modules`。
+
+   本地开发时常见的虚拟环境 / uv 用法示例：
+
+   ```bash
+   # 激活 backend 虚拟环境后：
+   cd backend
+   source .venv/bin/activate
+
+   fastapi dev app/main.py          # 启动后端 API（开发模式）
+   celery -A app.core.celery_app worker --loglevel=info --concurrency=1
+   pytest                           # 运行后端测试
+
+   ```
+
+   **构建 Block-Sparse-Attention CUDA 扩展（必需）**
+
+   推荐在仓库根目录直接执行一条命令（避免相对路径出错），脚本会自动：
+   - 检查 `backend/.venv` 中是否已能导入 `block_sparse_attn`，如已安装则直接跳过构建；
+   - 按物理内存自动选择较保守的 `MAX_JOBS` / `NINJAFLAGS`，降低 OOM 和“卡死”概率。
+
+   ```bash
+   bash scripts/install_block_sparse_attn.sh
+   ```
+
+   如需强制重新编译（例如升级了 CUDA / PyTorch）：
+
+   ```bash
+   bash scripts/install_block_sparse_attn.sh --force
+   ```
+
+   若不想使用脚本，也可以在仓库根目录手动执行等价命令（非 editable 安装，后续可复用已构建的 wheel，加快重新安装速度）：
+
    ```bash
    uv pip install \
      --python backend/.venv/bin/python \
      --no-build-isolation \
-     -e third_party/Block-Sparse-Attention
+     third_party/Block-Sparse-Attention
    ```
+
    该命令会在 `third_party/Block-Sparse-Attention` 中构建 `block_sparse_attn_cuda`，用于 WanVSR 模型的稀疏注意力推理；需要本地 CUDA 11.6+ 和 NVCC。
-   - 建议在仓库根目录执行上述命令，以保证 `--python backend/.venv/bin/python` 指向正确；若当前目录为 `backend/`，可改用 `uv pip install --no-build-isolation -e ../third_party/Block-Sparse-Attention`（已激活虚拟环境时也可省略 `--python`）。
-   - 构建过程会并发调用多个 NVCC 任务，内存占用较高。可在安装前设置并发参数来控制峰值内存：
-     - 物理内存 16 GB 主机：`export MAX_JOBS=3`、`export NINJAFLAGS=-j3`
-     - 物理内存 32 GB 主机：`export MAX_JOBS=6`、`export NINJAFLAGS=-j6`
-     - 物理内存 32+ GB 主机：`export MAX_JOBS=8`、`export NINJAFLAGS=-j8`
-     - 如仍遇到 OOM，可进一步下调上述数值至 2 或 1。
-   - 如果提示 `The detected CUDA version ... mismatches ... torch.version.cuda`，需安装与当前 PyTorch (`torch.version.cuda` 显示的版本) 一致的 CUDA Toolkit，或改用匹配版本的 PyTorch wheel。
+
+   若你想手动控制并发度（而不是使用脚本的自动选择），可以在执行命令前自行设置：
+   - 物理内存 16 GB 主机：`export MAX_JOBS=3`、`export NINJAFLAGS=-j3`
+   - 物理内存 32 GB 主机：`export MAX_JOBS=6`、`export NINJAFLAGS=-j6`
+   - 物理内存 32+ GB 主机：`export MAX_JOBS=8`、`export NINJAFLAGS=-j8`
+   - 如仍遇到 OOM，可进一步下调上述数值至 2 或 1。
+
+   如果提示 `The detected CUDA version ... mismatches ... torch.version.cuda`，需安装与当前 PyTorch (`torch.version.cuda` 显示的版本) 一致的 CUDA Toolkit，或改用匹配版本的 PyTorch wheel。
 2. **准备模型权重**
 
    默认约定 Tiny Long 权重放在 `backend/models/FlashVSR-v1.1`，所需文件为：

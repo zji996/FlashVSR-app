@@ -191,214 +191,186 @@ export default function UploadForm() {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6 w-full">
-      {/* 顶部：左侧说明，右侧拖拽上传 */}
-      <div className="grid gap-5 lg:grid-cols-2 items-stretch">
-        <div className="card h-full flex flex-col justify-between">
-          <div>
-            <div className="mb-4">
-              <h2 className="text-2xl font-bold text-gray-900">上传视频</h2>
-              <p className="text-sm text-gray-600 mt-2 leading-relaxed">
-                选择素材 → 设定预处理宽度/超分倍数 → 一键提交，前端会实时显示任务进度。
-              </p>
-            </div>
-            {systemStatus?.flashvsr && (
-              <div className="rounded-lg bg-gradient-to-br from-primary-50 to-indigo-50 px-4 py-3 border border-primary-100">
-                <div className="font-semibold text-gray-900 text-sm">FlashVSR {systemStatus.flashvsr.version}</div>
-                <div className="text-sm text-gray-600 mt-1">
-                  模型状态：
-                  <span className={`font-semibold ml-1 ${tinyLongReady ? 'text-green-600' : 'text-red-600'}`}>
-                    {tinyLongReady ? '权重已就绪' : '缺少权重'}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-          {clientError && (
-            <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {clientError}
-            </div>
-          )}
+      {/* 错误提示 */}
+      {clientError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {clientError}
         </div>
+      )}
 
-        {/* 文件上传区域 */}
-        <div
-          {...getRootProps()}
-          className={`
-            border-2 border-dashed rounded-xl p-8 sm:p-10 text-center cursor-pointer
-            transition-all duration-200 flex flex-col justify-center min-h-[200px]
-            ${isDragActive ? 'border-primary-500 bg-primary-50 scale-[1.02]' : 'border-gray-300 hover:border-primary-400 hover:bg-gray-50'}
-            ${file ? 'bg-green-50 border-green-500' : ''}
-          `}
-        >
+      {/* 文件上传区域 */}
+      <div
+        {...getRootProps()}
+        className={`
+          border-4 border-dashed rounded-2xl p-8 sm:p-10 text-center cursor-pointer
+          transition-all duration-200 flex flex-col justify-center min-h-[240px]
+          shadow-lg hover:shadow-2xl
+          ${isDragActive ? 'border-primary-500 bg-gradient-to-br from-primary-50 to-indigo-50 scale-[1.03] ring-4 ring-primary-200' : 'border-primary-400 bg-gradient-to-br from-blue-50 to-indigo-50 hover:border-primary-500 hover:scale-[1.01]'}
+          ${file ? 'bg-gradient-to-br from-green-50 to-emerald-50 border-green-500 ring-4 ring-green-200' : ''}
+        `}
+      >
           <input {...getInputProps()} />
           {file ? (
-            <div className="space-y-2">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-3">
+              <div className="flex flex-col gap-3">
                 <div>
-                  <div className="text-lg font-medium text-green-700">✓ 已选择文件</div>
-                  <div className="text-gray-700 break-all">{file.name}</div>
-                  <div className="text-sm text-gray-500 mt-1">{formatFileSize(file.size)}</div>
+                  <div className="text-2xl font-bold text-green-700 mb-2">✓ 已选择文件</div>
+                  <div className="text-lg font-medium text-gray-800 break-all">{file.name}</div>
+                  <div className="text-sm text-gray-600 mt-2">{formatFileSize(file.size)}</div>
                 </div>
                 <button
                   type="button"
                   onClick={clearFile}
-                  className="text-sm text-red-500 hover:text-red-600 underline"
+                  className="text-sm text-red-600 hover:text-red-700 font-medium underline mt-2"
                 >
                   重新选择
                 </button>
               </div>
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-gray-600 mt-4">
                 支持格式：{SUPPORTED_LABEL}，更少见的容器会自动转码为 MP4。
               </p>
             </div>
           ) : isDragActive ? (
-            <div className="text-lg text-primary-600">
-              放开以上传视频...
+            <div>
+              <div className="text-3xl mb-3">📹</div>
+              <div className="text-2xl font-bold text-primary-600">
+                放开以上传视频...
+              </div>
             </div>
           ) : (
             <div>
-              <div className="text-lg text-gray-700 mb-2">
+              <div className="text-5xl mb-4">📤</div>
+              <div className="text-xl font-bold text-gray-800 mb-3">
                 拖拽视频文件到此处，或点击选择文件
               </div>
-              <div className="text-sm text-gray-500">
+              <div className="text-sm text-gray-600">
                 支持 {SUPPORTED_LABEL} 等格式，其它视频也会自动转码为 MP4。
               </div>
             </div>
           )}
-        </div>
       </div>
 
-      {/* 参数配置 */}
-      <div className="space-y-5">
-        <div className="card">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-lg font-semibold text-gray-900">预处理宽度</h3>
-            <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">必选项</span>
-          </div>
-          <div className="space-y-2">
-            <select
-              value={preprocessWidthSelectValue}
-              onChange={(e) => {
-                if (e.target.value === 'custom') {
-                  setUseCustomWidth(true);
-                  return;
-                }
-                setUseCustomWidth(false);
-                setParameters({
-                  ...parameters,
-                  preprocess_width: parseInt(e.target.value, 10),
-                });
-              }}
-              className="input"
-            >
-              {PREPROCESS_WIDTH_OPTIONS.map((width) => (
-                <option key={width} value={width}>
-                  {width} px
-                </option>
-              ))}
-              <option value="custom">自定义</option>
-            </select>
-            {preprocessWidthSelectValue === 'custom' && (
-              <input
-                type="number"
-                min="640"
-                step="128"
-                value={parameters.preprocess_width}
-                onChange={(e) =>
+      {/* 参数配置 - 统一的完整配置区 */}
+      <div className="card bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 border-2 border-blue-200 shadow-lg">
+        <div className="grid gap-6 lg:grid-cols-2">
+          {/* 左侧：预处理宽度 */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xl font-bold text-gray-900">预处理宽度</h3>
+              <span className="text-xs font-semibold text-primary-700 bg-primary-100 px-3 py-1 rounded-full border border-primary-200">必选项</span>
+            </div>
+            <div className="space-y-2">
+              <select
+                value={preprocessWidthSelectValue}
+                onChange={(e) => {
+                  if (e.target.value === 'custom') {
+                    setUseCustomWidth(true);
+                    return;
+                  }
+                  setUseCustomWidth(false);
                   setParameters({
                     ...parameters,
-                    preprocess_width: e.target.value ? parseInt(e.target.value, 10) : 640,
+                    preprocess_width: parseInt(e.target.value, 10),
+                  });
+                }}
+                className="input"
+              >
+                {PREPROCESS_WIDTH_OPTIONS.map((width) => (
+                  <option key={width} value={width}>
+                    {width} px
+                  </option>
+                ))}
+                <option value="custom">自定义</option>
+              </select>
+              {preprocessWidthSelectValue === 'custom' && (
+                <input
+                  type="number"
+                  min="640"
+                  step="128"
+                  value={parameters.preprocess_width}
+                  onChange={(e) =>
+                    setParameters({
+                      ...parameters,
+                      preprocess_width: e.target.value ? parseInt(e.target.value, 10) : 640,
+                    })
+                  }
+                  className="input"
+                />
+              )}
+            </div>
+            <p className="text-sm text-gray-600">
+              请选择常用档位，或输入自定义宽度（建议 640-1280，例如 960 搭配 2× 超分接近 1080p）。
+            </p>
+            
+            {/* 预计输出宽度 */}
+            <div className="mt-4 pt-4 border-t-2 border-blue-200">
+              <div className="rounded-xl bg-white border-2 border-primary-200 px-5 py-4 text-center shadow-md">
+                <div className="font-semibold text-gray-700 text-xs uppercase tracking-wide mb-1">预计输出宽度</div>
+                <div className="text-3xl font-bold text-primary-600">
+                  {approxOutputWidth ? `${approxOutputWidth}px` : '—'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 右侧：快捷预设 */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xl font-bold text-gray-900">快捷预设</h3>
+              <button
+                type="button"
+                className="text-sm text-primary-600 hover:text-primary-700 font-semibold underline"
+                onClick={() =>
+                  setParameters({
+                    ...parameters,
+                    preprocess_width: 640,
+                    scale: 2.0,
                   })
                 }
-                className="input"
-              />
-            )}
-          </div>
-          <p className="text-sm text-gray-600 mt-2">
-            请选择常用档位，或输入自定义宽度（建议 640-1280，例如 960 搭配 2× 超分接近 1080p）。
-          </p>
-        </div>
-        <div className="card space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-gray-900">快捷预设</h3>
-            <button
-              type="button"
-              className="text-sm text-primary-600 hover:text-primary-700 font-medium"
-              onClick={() =>
-                setParameters({
-                  ...parameters,
-                  preprocess_width: 640,
-                  scale: 2.0,
-                })
-              }
-            >
-              重置为默认
-            </button>
-          </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {PRESET_PROFILES.map((preset) => {
-              const active = isPresetActive(preset);
-              return (
-                <button
-                  type="button"
-                  key={preset.key}
-                  onClick={() => handlePresetClick(preset)}
-                  className={`w-full rounded-lg border px-4 py-3 text-left transition-all ${
-                    active 
-                      ? 'border-primary-500 bg-primary-50 shadow-md ring-2 ring-primary-200' 
-                      : 'border-gray-200 hover:border-primary-300 hover:shadow-sm'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="font-semibold text-gray-900 truncate">{preset.label}</span>
-                    {active && <span className="ml-2 text-xs text-primary-600 font-medium">✓ 当前</span>}
-                  </div>
-                  <p className="text-xs leading-relaxed text-gray-600">{preset.description}</p>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      <div className="card space-y-4">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex-1">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">模型 & 输出</h3>
-            <p className="text-sm text-gray-600 leading-relaxed">
-              FlashVSR v1.1 推理服务会根据预处理宽度和倍数估算输出尺寸，无需在前端选择具体变体。
-            </p>
-          </div>
-          <div className="rounded-lg bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100 px-4 py-2.5 text-sm text-gray-800 whitespace-nowrap">
-            <div className="font-medium">预计输出宽度</div>
-            <div className="text-lg font-bold text-primary-600 mt-0.5">
-              {approxOutputWidth ? `${approxOutputWidth}px` : '—'}
+              >
+                重置为默认
+              </button>
+            </div>
+            <div className="grid grid-cols-1 gap-3">
+              {PRESET_PROFILES.map((preset) => {
+                const active = isPresetActive(preset);
+                return (
+                  <button
+                    type="button"
+                    key={preset.key}
+                    onClick={() => handlePresetClick(preset)}
+                    className={`w-full rounded-xl border-2 px-4 py-3.5 text-left transition-all shadow-sm hover:shadow-md ${
+                      active 
+                        ? 'border-primary-500 bg-white ring-2 ring-primary-300 shadow-lg' 
+                        : 'border-gray-300 bg-white hover:border-primary-400'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-bold text-gray-900 truncate">{preset.label}</span>
+                      {active && <span className="ml-2 text-xs text-white bg-primary-600 px-2 py-0.5 rounded-full font-semibold">✓</span>}
+                    </div>
+                    <p className="text-xs leading-relaxed text-gray-600">{preset.description}</p>
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
-        {tinyLongReady === false && systemStatus?.flashvsr && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            <span className="font-medium">缺少权重:</span> {systemStatus.flashvsr.missing_files.join(', ') || '请参考 README 下载。'}
-          </div>
-        )}
-        <div className="rounded-lg bg-blue-50 border border-blue-100 px-4 py-3 text-sm text-gray-700 leading-relaxed">
-          <span className="font-medium text-gray-900">💡 提示：</span>后端会自动按 <code className="bg-white px-1.5 py-0.5 rounded text-xs">preprocess_width</code> 和 <code className="bg-white px-1.5 py-0.5 rounded text-xs">scale</code> 生成输入，并在送入模型前把分辨率对齐到 128 的倍数，以满足 FlashVSR 内部窗口的整除约束。
-        </div>
-      </div>
 
-      <div className="card">
-        <div className="flex items-center justify-between mb-1">
-          <h3 className="text-lg font-semibold text-gray-900">高级参数（可选）</h3>
-          <button
-            type="button"
-            onClick={() => setShowAdvanced((prev) => !prev)}
-            className="text-sm text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1.5"
-          >
-            <span>{showAdvanced ? '▲ 折叠' : '▼ 展开'}</span>
-          </button>
-        </div>
-        {showAdvanced && (
-          <div className="mt-5 pt-5 border-t border-gray-200 grid grid-cols-1 gap-5 sm:grid-cols-2">
+        {/* 高级参数 - 整合在同一卡片内 */}
+        <div className="mt-6 pt-6 border-t-2 border-blue-200">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-xl font-bold text-gray-900">高级参数（可选）</h3>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((prev) => !prev)}
+              className="text-sm text-primary-600 hover:text-primary-700 font-semibold flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-white/50 transition-colors border border-primary-200"
+            >
+              <span>{showAdvanced ? '▲ 折叠' : '▼ 展开'}</span>
+            </button>
+          </div>
+          {showAdvanced && (
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">超分倍数 (Scale)</label>
               <input
@@ -464,19 +436,29 @@ export default function UploadForm() {
             </div>
           </div>
         )}
+        </div>
       </div>
 
+      {/* 权重警告 */}
+      {tinyLongReady === false && systemStatus?.flashvsr && (
+        <div className="rounded-xl border-2 border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <span className="font-bold">⚠ 缺少权重:</span> {systemStatus.flashvsr.missing_files.join(', ') || '请参考 README 下载。'}
+        </div>
+      )}
+
       {/* 提交按钮 */}
-      <div className="card bg-gradient-to-br from-gray-50 to-white">
+      <div className="card border-2 border-green-200 bg-gradient-to-br from-green-50 to-emerald-50">
         <div className="flex flex-col gap-4">
-          <div className="text-sm text-gray-600 leading-relaxed">
-            系统会把视频输出到 <code className="bg-white px-1.5 py-0.5 rounded text-xs border border-gray-200">storage/results</code> 并自动合并音频。长视频默认启用分片导出，即使任务失败也会保留已完成片段。
+          <div className="text-sm text-gray-700 leading-relaxed bg-white rounded-lg px-4 py-3 border border-gray-200">
+            <span className="font-semibold text-gray-900">📁 输出说明：</span>系统会把视频输出到 <code className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded font-mono text-xs">storage/results</code> 并自动合并音频。长视频默认启用分片导出，即使任务失败也会保留已完成片段。
           </div>
           <button
             type="submit"
             disabled={disableSubmit}
-            className={`btn btn-primary w-full text-lg py-4 font-semibold shadow-lg hover:shadow-xl transition-all ${
-              disableSubmit ? 'opacity-60 cursor-not-allowed' : 'hover:scale-[1.02]'
+            className={`w-full text-xl py-5 font-bold rounded-xl shadow-xl transition-all duration-200 ${
+              disableSubmit 
+                ? 'bg-gray-300 text-gray-500 cursor-not-allowed' 
+                : 'bg-gradient-to-r from-primary-600 to-indigo-600 text-white hover:from-primary-700 hover:to-indigo-700 hover:shadow-2xl hover:scale-[1.02]'
             }`}
           >
             {uploadMutation.isPending ? '⏳ 上传中...' : '🚀 开始处理'}

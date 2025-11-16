@@ -45,30 +45,27 @@ function App() {
   return (
     <div className="min-h-screen bg-gray-50">
       {/* 导航栏 */}
-      <nav className="bg-white shadow-sm border-b border-gray-200">
+      <nav className="sticky top-0 z-50 bg-white shadow-md border-b border-gray-200">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="py-4">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               {/* 左侧：标题和导航 */}
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between lg:justify-start">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between lg:justify-start lg:gap-6">
                 <div className="flex-shrink-0">
                   <h1 className="text-2xl font-bold text-primary-600">
                     ⚡ FlashVSR
                   </h1>
-                  <span className="text-xs text-gray-500">
-                    视频超分辨率处理平台
-                  </span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-3">
                   {navLinks.map((item) => (
                     <NavLink
                       key={item.to}
                       to={item.to}
                       className={({ isActive }) =>
-                        `inline-flex items-center rounded-full px-4 py-2 text-sm font-medium transition ${
+                        `inline-flex items-center justify-center rounded-lg px-5 py-2.5 text-sm font-semibold transition-all duration-200 ${
                           isActive
-                            ? 'bg-primary-600 text-white shadow-sm'
-                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                            ? 'bg-primary-600 text-white shadow-lg hover:bg-primary-700 hover:shadow-xl'
+                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200 hover:shadow-md'
                         }`
                       }
                     >
@@ -80,28 +77,48 @@ function App() {
 
               {/* 右侧：系统状态 */}
               {systemStatusForDisplay && (
-                <div className="flex flex-col gap-2 text-xs text-gray-600 lg:items-end">
-                  <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-3 text-sm">
+                  {/* GPU 状态 */}
+                  <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg font-medium ${
+                    systemStatusForDisplay.gpu_available 
+                      ? 'bg-green-100 text-green-700 border border-green-300' 
+                      : 'bg-red-100 text-red-700 border border-red-300'
+                  }`}>
                     <div
-                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                        systemStatusForDisplay.gpu_available ? 'bg-green-500' : 'bg-red-500'
+                      className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                        systemStatusForDisplay.gpu_available ? 'bg-green-500 animate-pulse' : 'bg-red-500'
                       }`}
                     />
-                    <span className="truncate">
-                      {systemStatusForDisplay.gpu_available
-                        ? `GPU: ${systemStatusForDisplay.gpu_info?.name || 'Available'}`
-                        : 'GPU: 不可用'}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3">
                     <span>
-                      任务: {systemStatusForDisplay.tasks.processing} 处理中 / {systemStatusForDisplay.tasks.pending} 等待中
+                      {systemStatusForDisplay.gpu_available
+                        ? `${systemStatusForDisplay.gpu_info?.name || 'GPU'}${
+                            systemStatusForDisplay.gpu_info?.count && systemStatusForDisplay.gpu_info.count > 1
+                              ? ` ×${systemStatusForDisplay.gpu_info.count}`
+                              : ''
+                          }`
+                        : 'GPU 不可用'}
                     </span>
                   </div>
+
+                  {/* 任务状态 */}
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-100 text-blue-700 border border-blue-300 font-medium">
+                    <span>📋</span>
+                    <span>
+                      {systemStatusForDisplay.tasks.processing} 处理中 / {systemStatusForDisplay.tasks.pending} 等待中
+                    </span>
+                  </div>
+
+                  {/* 模型状态 */}
                   {systemStatusForDisplay.flashvsr && (
-                    <div>
-                      FlashVSR {systemStatusForDisplay.flashvsr.version} · 模型
-                      {systemStatusForDisplay.flashvsr.weights_ready ? '已就绪' : '未完全就绪'}
+                    <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg font-medium ${
+                      systemStatusForDisplay.flashvsr.weights_ready
+                        ? 'bg-indigo-100 text-indigo-700 border border-indigo-300'
+                        : 'bg-yellow-100 text-yellow-700 border border-yellow-300'
+                    }`}>
+                      <span>{systemStatusForDisplay.flashvsr.weights_ready ? '✓' : '⚠'}</span>
+                      <span>
+                        FlashVSR {systemStatusForDisplay.flashvsr.version}
+                      </span>
                     </div>
                   )}
                 </div>

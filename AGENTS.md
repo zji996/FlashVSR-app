@@ -4,16 +4,32 @@
 FlashVSR keeps backend and frontend work in a single repo. `backend/app/api` hosts FastAPI routers, `core/` wires config/Celery, `services/` + `tasks/` run GPU jobs, and `schemas/` + `models/` define Pydantic/SQLAlchemy types. Frontend logic stays in `frontend/src` with fetch helpers in `api/`, routed pages in `pages/`, and state in `stores/`. Checkpoints belong in `models/`, uploads/results in `storage/uploads` + `storage/results`, and refs live in `assets/`, `docs/`, and `scripts/`.
 
 ## Build, Test, and Development Commands
-- `uv --project backend sync` — install backend dependencies and populate `backend/.venv` (uv-managed venv).
-- `source backend/.venv/bin/activate && cd backend && fastapi dev app/main.py` — start the API with auto-reload (推荐方式，使用 uv 创建的虚拟环境).
-- `cd backend && uv run fastapi dev app/main.py` — start the API with uv run (备选方式，无需手动激活 venv).
-- `source backend/.venv/bin/activate && cd backend && celery -A app.core.celery_app worker --loglevel=info --concurrency=1` — run the GPU worker.
-- `source backend/.venv/bin/activate && cd backend && alembic upgrade head` — apply DB migrations.
-- `cd frontend && pnpm install && pnpm dev` — install and boot the Vite dev server.
-- `cd frontend && pnpm lint` — lint/format the React codebase.
-- `cd backend && uv run pytest` — execute backend tests via uv (推荐方式；pytest 作为 dev-dependency 通过 uv 安装到 `backend/.venv` 中)。
-- `source backend/.venv/bin/activate && cd backend && pytest` — execute backend tests using the same uv-managed venv (若 pytest 未找到，请先运行 `uv --project backend sync`).
-- `docker compose up --build` — launch the full stack with Postgres and Redis.
+- Backend venv + deps（推荐显式创建 3.12 venv）  
+  `cd backend && uv venv --python 3.12 && source .venv/bin/activate && uv sync`
+- Start API（开发模式，自动重载）  
+  `cd backend && source .venv/bin/activate && fastapi dev app/main.py`
+- Start GPU worker（单 worker / 单任务并发）  
+  `cd backend && source .venv/bin/activate && celery -A app.core.celery_app worker --loglevel=info --concurrency=1`
+- Apply DB migrations  
+  `cd backend && source .venv/bin/activate && alembic upgrade head`
+- Backend tests（推荐直接用 pytest，也可用 uv run）  
+  `cd backend && source .venv/bin/activate && pytest`  
+  `cd backend && uv run pytest`
+- Frontend install + dev server  
+  `cd frontend && pnpm install && pnpm dev`
+- Frontend lint/format  
+  `cd frontend && pnpm lint`
+- Full stack via Docker Compose  
+  `docker compose up --build`
+
+### GPU 扩展与模型权重
+- Block-Sparse-Attention CUDA 扩展（WanVSR 稀疏注意力，必需，不要修改 `third_party/Block-Sparse-Attention` 源码）：  
+  在仓库根目录执行 `bash scripts/install_block_sparse_attn.sh`。脚本会：
+  - 自动检测 `backend/.venv` 中是否已能导入 `block_sparse_attn`，已安装则跳过重建；
+  - 基于物理内存设置保守的 `MAX_JOBS` / `NINJAFLAGS`，降低 NVCC 并发导致的 OOM 风险。
+- FlashVSR Tiny Long 权重（默认目录 `backend/models/FlashVSR-v1.1`，仅 Tiny Long 模型在用）：  
+  后端会在首次真正初始化 Tiny Long pipeline 时自动从 ModelScope 仓库 `kuohao/FlashVSR-v1.1` 下载缺失文件（前提是外网可用且 `modelscope` 已安装）。  
+  如需显式预下载，请通过 `backend/app/flashvsr_core/diffsynth/configs/model_config.py` 中的预设 id（`FlashVSR-1.1-Tiny-Long`）配合 `ModelManager`。
 
 ## Frontend Notes
 - Tailwind CSS lives in `frontend/src/index.css` via the `@tailwind` directives and is compiled by `postcss.config.js`; if you ever need to recreate the setup, follow the Tailwind + Vite guide (create a Vite project, install `tailwindcss` plus the optional `@tailwindcss/vite` plugin, add that plugin to `vite.config.ts`, import `@tailwind base/components/utilities`, then run `pnpm dev` or `pnpm build`).

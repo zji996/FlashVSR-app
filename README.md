@@ -2,6 +2,8 @@
 
 FlashVSR 构建在 FastAPI/Celery 后端与 Vite/React 前端之上，围绕 FlashVSR v1.1 推理流程提供上传、参数定制、任务监控与结果下载的端到端体验。模型权重、上传/下载文件与 GPU 作业由 Celery + Redis 统一调度，React 端界面通过 `/api` 接口实时反映任务状态。
 
+![FlashVSR Web UI](assets/FlashVSR-app.webp)
+
 ## 文档入口
 
 - `docs/architecture.md`：架构与项目结构视角的系统概览。
@@ -19,9 +21,10 @@ FlashVSR 构建在 FastAPI/Celery 后端与 Vite/React 前端之上，围绕 Fla
 
 ## 快速参考
 
-- 后端依赖：`uv --project backend sync`。
+- 后端虚拟环境与依赖：`cd backend && uv venv --python 3.12 && source .venv/bin/activate && uv sync`。
 - 前端启动：`cd frontend && pnpm install && pnpm dev`。
-- 启动 Celery：`source backend/.venv/bin/activate && celery -A app.core.celery_app worker --loglevel=info --concurrency=1`。
+- 启动 Celery Worker：`cd backend && source .venv/bin/activate && celery -A app.core.celery_app worker --loglevel=info --concurrency=1`。
+- 构建 Block-Sparse-Attention CUDA 扩展：`bash scripts/install_block_sparse_attn.sh`（需本地 CUDA 11.6+ 与 NVCC）。
 - 全栈部署：`docker compose up --build`（NVidia Container Toolkit + GPU 驱动准备）。
 
 更多步骤请移步 `docs/deployment.md`。

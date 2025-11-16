@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from queue import Queue
 from threading import Thread
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from typing import Any, Callable, Optional
 from uuid import uuid4
 
 import imageio
@@ -15,9 +15,32 @@ import torch
 from tqdm import tqdm
 
 from app.config import settings
+from app.services.flashvsr_io import (
+    tensor_to_video,
+    merge_video_chunks,
+    cleanup_chunk_artifacts,
+)
 
-if TYPE_CHECKING:
-    from app.services.flashvsr_service import FlashVSRService
+
+def build_chunk_base_name(output_path: str, max_length: int = 64) -> str:
+    """
+    根据最终输出路径生成分片文件的基础文件名，限制长度以避免
+    “File name too long” 等文件系统限制问题。
+    """
+    stem = Path(output_path).stem or "output"
+    safe_chars = []
+    for ch in stem:
+        if ch.isalnum() or ch in {"-", "_"}:
+            safe_chars.append(ch)
+        else:
+            safe_chars.append("_")
+    safe_stem = "".join(safe_chars).strip("_") or "output"
+    if len(safe_stem) > max_length:
+        import hashlib
+
+        digest = hashlib.sha1(stem.encode("utf-8")).hexdigest()[:8]
+        safe_stem = f"{safe_stem[: max_length - 9]}_{digest}"
+    return safe_stem
 
 
 class ChunkedVideoWriter:
@@ -104,7 +127,6 @@ class ChunkedExportSession:
 
     def __init__(
         self,
-        service: "FlashVSRService",
         output_path: str,
         fps: int,
         total_frames: int,
@@ -112,7 +134,6 @@ class ChunkedExportSession:
         progress_callback: Optional[Callable[[int, int, float], None]],
         audio_path: Optional[str] = None,
     ) -> None:
-        self._service = service
         self.output_path = output_path
         self.total_frames = total_frames
         self.progress_callback = progress_callback
@@ -121,6 +142,7 @@ class ChunkedExportSession:
         self.chunk_paths: list[Path] = []
         self.chunk_dir = settings.FLASHVSR_CHUNKED_SAVE_TMP_DIR / f"chunks_{uuid4().hex}"
         self.chunk_size = settings.FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE
+        chunk_base_name = build_chunk_base_name(output_path)
         self._buffer: list[np.ndarray] = []
         self.audio_path = audio_path
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -128,7 +150,7 @@ class ChunkedExportSession:
             fps=fps,
             quality=settings.FLASHVSR_EXPORT_VIDEO_QUALITY,
             chunk_dir=self.chunk_dir,
-            base_name=Path(output_path).stem,
+            base_name=chunk_base_name,
         )
         self._closed = False
         self._partial_path = Path(output_path).with_name(
@@ -140,7 +162,7 @@ class ChunkedExportSession:
             return
         chunk_cpu = tensor_chunk.detach().to("cpu")
         first_batch = chunk_cpu[0]
-        frames = self._service._tensor2video(first_batch)
+        frames = tensor_to_video(first_batch)
         frame_arrays = [np.array(frame) for frame in frames]
         self._buffer.extend(frame_arrays)
         self._drain_buffer()
@@ -155,7 +177,7 @@ class ChunkedExportSession:
             return
         self._flush_buffer()
         self.writer.finish()
-        self._service._merge_video_chunks(self.chunk_paths, self.output_path, audio_path=self.audio_path)
+        merge_video_chunks(self.chunk_paths, self.output_path, audio_path=self.audio_path)
         if self.progress_callback:
             elapsed = max(time.time() - self.start_time, 0.0)
             avg_time = elapsed / self.total_frames if self.total_frames else 0.0
@@ -167,7 +189,7 @@ class ChunkedExportSession:
         if self._closed:
             return
         self.writer.abort()
-        self._service._cleanup_chunk_artifacts(self.chunk_paths)
+        cleanup_chunk_artifacts(self.chunk_paths)
         self._closed = True
         self._buffer.clear()
         self.chunk_paths.clear()
@@ -183,16 +205,16 @@ class ChunkedExportSession:
         try:
             self.writer.finish()
         except Exception:
-            self._service._cleanup_chunk_artifacts(self.chunk_paths)
+            cleanup_chunk_artifacts(self.chunk_paths)
             self._buffer.clear()
             self.chunk_paths.clear()
             self._closed = True
             raise
         partial_path = self._partial_path
         try:
-            self._service._merge_video_chunks(self.chunk_paths, str(partial_path), audio_path=self.audio_path)
+            merge_video_chunks(self.chunk_paths, str(partial_path), audio_path=self.audio_path)
         except Exception:
-            self._service._cleanup_chunk_artifacts(self.chunk_paths)
+            cleanup_chunk_artifacts(self.chunk_paths)
             self._buffer.clear()
             self.chunk_paths.clear()
             self._closed = True

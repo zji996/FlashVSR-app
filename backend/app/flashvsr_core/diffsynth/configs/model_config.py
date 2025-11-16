@@ -34,7 +34,7 @@ patch_model_loader_configs: list = []
 
 
 # -----------------------------
-# Minimal preset model metadata for downloader (unused in backend service)
+# Minimal preset model metadata for downloader and backend service
 # -----------------------------
 
 Preset_model_id: TypeAlias = Literal[
@@ -45,39 +45,60 @@ Preset_model_id: TypeAlias = Literal[
     "FlashVSR-1.1-Full",
 ]
 
+FLASHVSR_TINY_LONG_PRESET_ID: Preset_model_id = "FlashVSR-1.1-Tiny-Long"
+
+# 公共 ModelScope 仓库 ID（后端自动下载与 downloader 共用）
+FLASHVSR_TINY_LONG_REPO_ID = "kuohao/FlashVSR-v1.1"
+
+# 该预设下的所有权重文件（repo, 远端路径, 本地目录）
+FLASHVSR_TINY_LONG_FILE_SPECS = [
+    (
+        FLASHVSR_TINY_LONG_REPO_ID,
+        "diffusion_pytorch_model_streaming_dmd.safetensors",
+        "models/FlashVSR-v1.1",
+    ),
+    (
+        FLASHVSR_TINY_LONG_REPO_ID,
+        "LQ_proj_in.ckpt",
+        "models/FlashVSR-v1.1",
+    ),
+    (
+        FLASHVSR_TINY_LONG_REPO_ID,
+        "TCDecoder.ckpt",
+        "models/FlashVSR-v1.1",
+    ),
+    (
+        FLASHVSR_TINY_LONG_REPO_ID,
+        "Wan2.1_VAE.pth",
+        "models/FlashVSR-v1.1",
+    ),
+    (
+        FLASHVSR_TINY_LONG_REPO_ID,
+        "posi_prompt.pth",
+        "models/FlashVSR-v1.1",
+    ),
+]
+
+# 后端 Tiny Long 推理必需的核心文件（DiT + LQ 投影 + TCDecoder）
+FLASHVSR_TINY_LONG_BASE_FILES: tuple[str, ...] = (
+    "diffusion_pytorch_model_streaming_dmd.safetensors",
+    "LQ_proj_in.ckpt",
+    "TCDecoder.ckpt",
+)
+
+# Prompt Tensor 文件名（用于 cross-attn KV 初始化）
+FLASHVSR_TINY_LONG_PROMPT_FILE = "posi_prompt.pth"
+
+# 目前仅 Wan2.1_VAE.pth 作为额外参考文件存在（Full 变体或外部工具可用）
+FLASHVSR_TINY_LONG_EXTRA_FILES: tuple[str, ...] = ("Wan2.1_VAE.pth",)
+
 # Downloader uses these dicts to resolve preset ids into concrete files.
-# Currently we only wire `FlashVSR-1.1-Tiny-Long` to the public ModelScope repo
-# `kuohao/FlashVSR-v1.1`; other ids remain empty for future extensions.
+# Currently we only wire `FlashVSR-1.1-Tiny-Long` to the public ModelScope repo;
+# other ids remain empty for future extensions.
 preset_models_on_huggingface: dict[Preset_model_id, object] = {}
 preset_models_on_modelscope: dict[Preset_model_id, object] = {
-    "FlashVSR-1.1-Tiny-Long": {
-        "file_list": [
-            (
-                "kuohao/FlashVSR-v1.1",
-                "diffusion_pytorch_model_streaming_dmd.safetensors",
-                "models/FlashVSR-v1.1",
-            ),
-            (
-                "kuohao/FlashVSR-v1.1",
-                "LQ_proj_in.ckpt",
-                "models/FlashVSR-v1.1",
-            ),
-            (
-                "kuohao/FlashVSR-v1.1",
-                "TCDecoder.ckpt",
-                "models/FlashVSR-v1.1",
-            ),
-            (
-                "kuohao/FlashVSR-v1.1",
-                "Wan2.1_VAE.pth",
-                "models/FlashVSR-v1.1",
-            ),
-            (
-                "kuohao/FlashVSR-v1.1",
-                "posi_prompt.pth",
-                "models/FlashVSR-v1.1",
-            ),
-        ],
+    FLASHVSR_TINY_LONG_PRESET_ID: {
+        "file_list": FLASHVSR_TINY_LONG_FILE_SPECS,
         # ModelManager will load from these paths after download_models() returns.
         "load_path": [
             "models/FlashVSR-v1.1/diffusion_pytorch_model_streaming_dmd.safetensors",

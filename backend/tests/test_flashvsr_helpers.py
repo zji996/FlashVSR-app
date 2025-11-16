@@ -8,12 +8,12 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.services.flashvsr_service import FlashVSRService
+from app.services import flashvsr_io
 from app.config import settings
 
 
 def test_largest_8n1_leq_basic():
-    helper = FlashVSRService._largest_8n1_leq
+    helper = flashvsr_io.largest_8n1_leq
 
     assert helper(0) == 0
     assert helper(1) == 1
@@ -30,7 +30,7 @@ def test_compute_scaled_dims_alignment():
     base_width = 1920
     base_height = 1080
 
-    s_width, s_height, t_width, t_height = FlashVSRService._compute_scaled_dims(
+    s_width, s_height, t_width, t_height = flashvsr_io.compute_scaled_dims(
         base_width, base_height, scale
     )
 
@@ -50,19 +50,17 @@ def test_estimate_video_bytes_matches_dtype():
     for dtype in (torch.float16, torch.bfloat16, torch.float32):
         element_bytes = torch.finfo(dtype).bits // 8
         expected = total_frames * height * width * 3 * element_bytes
-        computed = FlashVSRService._estimate_video_bytes(
+        computed = flashvsr_io.estimate_video_bytes(
             total_frames, height, width, dtype
         )
         assert computed == expected
 
 
 def test_should_stream_video_respects_prefetch(monkeypatch):
-    service = FlashVSRService()
-
     # prefetch > 0 -> streaming enabled
     monkeypatch.setattr(settings, "FLASHVSR_STREAMING_PREFETCH_FRAMES", 16, raising=False)
-    assert service._should_stream_video(100, 720, 1280, torch.bfloat16) is True
+    assert flashvsr_io.should_stream_video(100, 720, 1280, torch.bfloat16) is True
 
     # prefetch == 0 -> streaming disabled
     monkeypatch.setattr(settings, "FLASHVSR_STREAMING_PREFETCH_FRAMES", 0, raising=False)
-    assert service._should_stream_video(100, 720, 1280, torch.bfloat16) is False
+    assert flashvsr_io.should_stream_video(100, 720, 1280, torch.bfloat16) is False

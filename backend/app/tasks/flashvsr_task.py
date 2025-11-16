@@ -12,6 +12,7 @@ from app.core.database import SessionLocal
 from app.models.task import Task, TaskStatus
 from app.schemas.task import TaskParameters
 from app.services.flashvsr_service import FlashVSRService
+from app.services.flashvsr_io import compute_scaled_dims
 from app.services.video_preprocessor import VideoPreprocessor
 from app.services.video_metadata import VideoMetadataService
 from app.config import settings
@@ -79,7 +80,7 @@ def process_video_task(self, task_id: str):
         predicted_width = None
         predicted_height = None
         if effective_metadata.width and effective_metadata.height:
-            _, _, predicted_width, predicted_height = FlashVSRService._compute_scaled_dims(
+            _, _, predicted_width, predicted_height = compute_scaled_dims(
                 effective_metadata.width,
                 effective_metadata.height,
                 scale,
