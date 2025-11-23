@@ -7,7 +7,7 @@ FlashVSR 应用围绕 Frontend、Backend 与 GPU 作业流三大层构建，同�
 - **Frontend（`frontend/`）**：Vite + React + TypeScript 负责 UI、上传、参数配置与任务状态展示；React Query 作为数据抓取层，Zustand 管理客户端筛选/分页状态；`api/` 目录封装对 `/api/*` 的调用，TailwindCSS 提供视觉体系。
 - **Backend（`backend/`）**：FastAPI 提供 `/api/system/*` 和 `/api/tasks/*` 路由；SQLAlchemy/PostgreSQL 持久化任务与进度，Pydantic schemas（`app/schemas`）约束前端交互；配置集中在 `app/config`，数据库依赖于 `app/core/database.py`。
 - **GPU 作业流（`services/` + `tasks/`）**：上传后由 `tasks.flashvsr_task.process_video_task` 调用 FlashVSR 推理；`services.flashvsr_service` 封装 Tiny Long 变体的模型加载、GPU 显存管理与进度回调，Celery/Redis 负责调度与队列，`storage/` 持久化上传文件与结果。
-- **LQ 流式缓冲**：`services/video_streaming.py` 维护多线程 `StreamingVideoTensor`，按照 `FLASHVSR_STREAMING_PREFETCH_FRAMES` 预读、`FLASHVSR_STREAMING_DECODE_THREADS` 个 CPU 解码线程并行处理帧。设置 `FLASHVSR_STREAMING_LQ_MAX_BYTES`>0 时会一次性预锁定同容量的环形缓冲，实现 “32GB 内存顶满就滚动释放” 的策略；值为 0 时表示无限制，只阻塞等待并不写 memmap。FlashVSR 推理循环照旧在每个 8 帧窗口结束后调用 `release_until` 释放旧帧。
+- **LQ 流式缓冲**：`services/video_streaming.py` 维护多线程 `StreamingVideoTensor`，按照 `FLASHVSR_STREAMING_PREFETCH_FRAMES` 预读、`FLASHVSR_STREAMING_DECODE_THREADS` 个 CPU 解码线程并行处理帧。LQ 环形缓冲的容量会根据当前分辨率与 dtype 自动估算，至少能够容纳 `max(FLASHVSR_STREAMING_PREFETCH_FRAMES, 50)` 帧的工作集；如显式设置 `FLASHVSR_STREAMING_LQ_MAX_BYTES` 为正数，则在不低于该自动估算值的前提下预锁定对应容量的缓冲区，实现 “顶满即滚动释放” 的策略。FlashVSR 推理循环照旧在每个 8 帧窗口结束后调用 `release_until` 释放旧帧。
 - **默认模型**：`settings.DEFAULT_MODEL_VARIANT` 以及前端 `UploadForm` 默认使用 Tiny Long，当前实现只暴露 Tiny Long 一个变体。
 
 ## 支撑设施

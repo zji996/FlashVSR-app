@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 import subprocess
@@ -16,6 +17,9 @@ from tqdm import tqdm
 
 from app.config import settings
 from app.services.video_streaming import StreamingVideoTensor
+
+
+logger = logging.getLogger(__name__)
 
 
 def largest_8n1_leq(n: int) -> int:
@@ -123,6 +127,78 @@ def estimate_video_bytes(
     return total_frames * height * width * 3 * element_bytes
 
 
+def _compute_streaming_buffer_config(
+    total_frames: int,
+    height: int,
+    width: int,
+    dtype: torch.dtype,
+) -> tuple[int, int, int, int]:
+    """
+    根据当前视频分辨率与配置，动态计算 LQ 流式缓冲容量。
+
+    返回 (capacity_frames, prefetch_frames, per_frame_bytes, limit_bytes_used)。
+
+    设计目标：
+    - 至少能容纳 max(FLASHVSR_STREAMING_PREFETCH_FRAMES, 50) 帧，保证有足够的工作集；
+    - 当环境变量 FLASHVSR_STREAMING_LQ_MAX_BYTES <= 0 时，按上述目标自动估算所需内存；
+    - 当显式设置 FLASHVSR_STREAMING_LQ_MAX_BYTES 时，若小于自动估算值则提升至安全值并记录日志，
+      避免因为误配置导致无法启动流式推理；
+    - 始终确保不会请求超过 total_frames 的容量。
+    """
+    if total_frames <= 0:
+        raise RuntimeError("视频没有可处理的帧")
+
+    per_frame_bytes = estimate_video_bytes(1, height, width, dtype)
+    if per_frame_bytes <= 0:
+        raise RuntimeError("无法计算单帧缓冲大小")
+
+    # 至少预读 1 帧，且不超过总帧数。
+    prefetch = max(1, min(settings.FLASHVSR_STREAMING_PREFETCH_FRAMES, total_frames))
+
+    # 为了更平滑的解码与推理，目标缓冲工作集不少于 50 帧。
+    min_working_set_frames = 50
+    target_frames = max(prefetch, min_working_set_frames)
+    target_frames = min(target_frames, total_frames)
+
+    auto_limit_bytes = target_frames * per_frame_bytes
+
+    configured_limit = settings.FLASHVSR_STREAMING_LQ_MAX_BYTES
+    if configured_limit <= 0:
+        # 0 或未设置：按分辨率/工作集自动估算所需内存。
+        limit_bytes = auto_limit_bytes
+    else:
+        # 显式设置时，若过小会导致无法满足工作集需求，这里向上提升到安全值，避免因误配置而直接失败。
+        if configured_limit < auto_limit_bytes:
+            logger.warning(
+                (
+                    "FLASHVSR_STREAMING_LQ_MAX_BYTES=%d 字节小于自动估算的安全值 %.2f GiB，"
+                    "将按自动估算值 %.2f GiB 预锁定 LQ 流式缓冲区。"
+                ),
+                configured_limit,
+                auto_limit_bytes / (1024**3),
+                auto_limit_bytes / (1024**3),
+            )
+            limit_bytes = auto_limit_bytes
+        else:
+            limit_bytes = configured_limit
+
+    frames_from_limit = limit_bytes // per_frame_bytes
+    if frames_from_limit <= 0:
+        raise RuntimeError(
+            "FLASHVSR_STREAMING_LQ_MAX_BYTES 太小，连单帧 LQ 缓冲都容纳不了"
+        )
+
+    if frames_from_limit < prefetch:
+        required_bytes = prefetch * per_frame_bytes
+        raise RuntimeError(
+            "FLASHVSR_STREAMING_LQ_MAX_BYTES 太小，无法预读启动推理所需的帧数；"
+            f"至少需要 {required_bytes / (1024**3):.2f} GB 才能缓存 {prefetch} 帧"
+        )
+
+    capacity_frames = min(frames_from_limit, total_frames)
+    return capacity_frames, prefetch, per_frame_bytes, int(limit_bytes)
+
+
 def should_stream_video(
     total_frames: int,
     height: int,
@@ -132,7 +208,9 @@ def should_stream_video(
     """
     根据环境配置判断是否启用 LQ 流式缓冲。
 
-    当前实现：只要预读帧数 > 0 就启用流式，限制由 FLASHVSR_STREAMING_LQ_MAX_BYTES 控制。
+    当前实现：只要预读帧数 > 0 就启用流式，缓冲上限由
+    FLASHVSR_STREAMING_PREFETCH_FRAMES 与分辨率自适应估算的
+    FLASHVSR_STREAMING_LQ_MAX_BYTES（或其自动值）共同决定。
     """
     return settings.FLASHVSR_STREAMING_PREFETCH_FRAMES > 0
 
@@ -177,28 +255,12 @@ def build_streaming_video_tensor(
 ) -> StreamingVideoTensor:
     """构建 StreamingVideoTensor 以支持 LQ 流式缓冲."""
     total_needed = len(indices)
-    if total_needed == 0:
-        raise RuntimeError("视频没有可处理的帧")
-    limit_bytes = settings.FLASHVSR_STREAMING_LQ_MAX_BYTES
-    per_frame_bytes = estimate_video_bytes(1, target_height, target_width, dtype)
-    if per_frame_bytes <= 0:
-        raise RuntimeError("无法计算单帧缓冲大小")
-    if limit_bytes <= 0:
-        frames_from_limit = total_needed
-    else:
-        frames_from_limit = limit_bytes // per_frame_bytes
-        if frames_from_limit <= 0:
-            raise RuntimeError(
-                "FLASHVSR_STREAMING_LQ_MAX_BYTES 太小，连单帧 LQ 缓冲都容纳不了"
-            )
-    prefetch = max(1, min(settings.FLASHVSR_STREAMING_PREFETCH_FRAMES, total_needed))
-    if frames_from_limit < prefetch:
-        required_bytes = prefetch * per_frame_bytes
-        raise RuntimeError(
-            "FLASHVSR_STREAMING_LQ_MAX_BYTES 太小，无法预读启动推理所需的帧数；"
-            f"至少需要 {required_bytes / (1024**3):.2f} GB 才能缓存 {prefetch} 帧"
-        )
-    capacity_frames = min(frames_from_limit, total_needed)
+    capacity_frames, prefetch, per_frame_bytes, limit_bytes = _compute_streaming_buffer_config(
+        total_needed,
+        target_height,
+        target_width,
+        dtype,
+    )
 
     def _read(idx: int):
         return reader.get_data(idx)

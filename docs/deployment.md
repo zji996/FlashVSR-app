@@ -322,10 +322,10 @@ export FLASHVSR_PP_OVERLAP_MODE=basic   # 或 aggressive，启用更激进的 3-
 
 - 确保 `backend/storage` 与 `backend/models` 在 `.gitignore` 中不会被提交，且 Docker volume 挂载保持一致。
 - `FLASHVSR_CACHE_OFFLOAD` 控制流式 KV cache 的下放策略（`auto`/`cpu`/`none`，默认 `auto`）。显存 ≤ `FLASHVSR_CACHE_OFFLOAD_AUTO_THRESHOLD_GB`（默认 24GB）的 GPU 会自动把注意力缓存转存到 CPU，从而避免大分辨率视频在第 2 个窗口就 OOM；若希望始终启用或关闭，可改成 `cpu` 或 `none`。
-- `FLASHVSR_STREAMING_LQ_MAX_BYTES`（默认 0）配合 `FLASHVSR_STREAMING_PREFETCH_FRAMES` 与 `FLASHVSR_STREAMING_DECODE_THREADS` 控制纯内存流式缓冲：`services/video_streaming.py` 会预先申请一个受限的环形缓冲（当上限>0 时立即锁定对应内存），并用多线程在 CPU 端解码 LQ 帧，达到预读阈值（默认 25 帧 ≈ 3 个 8 帧窗口 + 1 帧）后即可启动推理。FlashVSR 推理循环通过 `release_until` 及时释放已消费的帧，让 “32GB 顶满即滚动” 场景成为可能，而把上限设成 0 则表示不设界限，只阻塞等待而不写 memmap。
+- `FLASHVSR_STREAMING_LQ_MAX_BYTES`（默认 0，表示按分辨率自动估算）配合 `FLASHVSR_STREAMING_PREFETCH_FRAMES` 与 `FLASHVSR_STREAMING_DECODE_THREADS` 控制纯内存流式缓冲：`services/video_streaming.py` 会预先申请一个受限的环形缓冲（自动模式下会按当前分辨率与 dtype 估算，至少可容纳 `max(FLASHVSR_STREAMING_PREFETCH_FRAMES, 50)` 帧），并用多线程在 CPU 端解码 LQ 帧，达到预读阈值（默认 25 帧 ≈ 3 个 8 帧窗口 + 1 帧）后即可启动推理。显式设置 `FLASHVSR_STREAMING_LQ_MAX_BYTES`>0 时，会在不低于该自动估算值的前提下预锁定对应内存，实现 “顶满即滚动释放” 的策略。FlashVSR 推理循环通过 `release_until` 及时释放已消费的帧。
   - 该上限只影响 **输入 LQ 流** 在 CPU 内存中最多缓存多少帧，与输出分片（`FLASHVSR_CHUNKED_SAVE_*`）无直接关系；模型每次只需要几十帧的滑动窗口（约 8n+1 帧）即可连续推理。
-  - 实际调参可以按“目标分辨率 + 工作集帧数”估算：单帧占用近似为 `H * W * 3 * 2 bytes`（bfloat16），工作集可取 `32~64` 帧。例如 2×1080p（模型侧约 1920×1024）时，64 帧约 0.8 GiB，因此设置为 `1GB`~`2GB` 已足够；更高分辨率或希望更充足的预读再相应增大。
-  - 若希望小视频一次载入 CPU 内存，可将该值设得更大（如 `32GB` 或 `64GB`）；若机器内存紧张则可以下调至 `1GB`~`2GB`，对推理速度影响有限。
+  - 实际占用可按“目标分辨率 + 工作集帧数”估算：单帧占用近似为 `H * W * 3 * 2 bytes`（bfloat16），当前默认工作集不少于 50 帧。例如 2×1080p（模型侧约 1920×1024）时，50 帧约 0.6 GiB，因此自动模式会预留约 0.6 GiB 级别的缓冲；更高分辨率或希望更充足的预读可通过调大 `FLASHVSR_STREAMING_LQ_MAX_BYTES` 显式放宽上限。
+  - 若希望小视频一次载入 CPU 内存，可将该值设得更大（如 `32GB` 或 `64GB`）；若机器内存极度紧张，也可以显式下调该值，但需注意不要低于自动估算值，否则会被自动提升并记录警告日志。
 - `FLASHVSR_CHUNKED_SAVE_MIN_FRAMES` / `FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE` 控制输出分片写入：当帧数超过阈值时，Celery 会把超分结果按固定帧数拆成多个 `backend/storage/tmp/chunks_*/*.mp4`，由后台进程写盘，最后再用 `ffmpeg -f concat` 合并生成最终文件。设为 0 可恢复一次性写入。
 - 若推理过程中任务失败或被取消，系统会把已经写盘的分片自动合并成 `<输出文件名>_partial.mp4` 并保存在结果目录，同时在错误信息中提示路径，便于用户取走已完成的部分视频。
 - `FLASHVSR_EXPORT_VIDEO_QUALITY` 控制最终结果视频在导出阶段的编码质量（整数 1–10，默认 6，数值越大质量越高、码率与文件体积越大）。该参数同时作用于普通导出与分片写盘两条路径，编码本身在 CPU 上完成，不额外占用 GPU 算力。

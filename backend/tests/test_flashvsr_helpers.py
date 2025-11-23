@@ -64,3 +64,57 @@ def test_should_stream_video_respects_prefetch(monkeypatch):
     # prefetch == 0 -> streaming disabled
     monkeypatch.setattr(settings, "FLASHVSR_STREAMING_PREFETCH_FRAMES", 0, raising=False)
     assert flashvsr_io.should_stream_video(100, 720, 1280, torch.bfloat16) is False
+
+
+def test_streaming_buffer_auto_uses_min_working_set(monkeypatch):
+    height = 1024
+    width = 1920
+    dtype = torch.bfloat16
+
+    # 使用默认预读帧数 25，自动模式（LQ 上限未设置或为 0）。
+    monkeypatch.setattr(settings, "FLASHVSR_STREAMING_PREFETCH_FRAMES", 25, raising=False)
+    monkeypatch.setattr(settings, "FLASHVSR_STREAMING_LQ_MAX_BYTES", 0, raising=False)
+
+    capacity_frames, prefetch, per_frame_bytes, limit_bytes = flashvsr_io._compute_streaming_buffer_config(
+        total_frames=100,
+        height=height,
+        width=width,
+        dtype=dtype,
+    )
+
+    expected_per_frame = flashvsr_io.estimate_video_bytes(1, height, width, dtype)
+    assert per_frame_bytes == expected_per_frame
+    # 目标工作集不少于 50 帧。
+    assert prefetch == 25
+    assert capacity_frames == 50
+    assert limit_bytes == expected_per_frame * 50
+
+
+def test_streaming_buffer_ignores_too_small_config_limit(monkeypatch):
+    height = 1024
+    width = 1920
+    dtype = torch.bfloat16
+
+    monkeypatch.setattr(settings, "FLASHVSR_STREAMING_PREFETCH_FRAMES", 25, raising=False)
+
+    per_frame = flashvsr_io.estimate_video_bytes(1, height, width, dtype)
+    auto_limit = per_frame * 50
+    # 配置一个明显偏小的上限，函数应自动提升到安全值。
+    small_limit = per_frame * 10
+    monkeypatch.setattr(
+        settings,
+        "FLASHVSR_STREAMING_LQ_MAX_BYTES",
+        small_limit,
+        raising=False,
+    )
+
+    capacity_frames, prefetch, _, limit_bytes = flashvsr_io._compute_streaming_buffer_config(
+        total_frames=100,
+        height=height,
+        width=width,
+        dtype=dtype,
+    )
+
+    assert prefetch == 25
+    assert capacity_frames == 50
+    assert limit_bytes == auto_limit
