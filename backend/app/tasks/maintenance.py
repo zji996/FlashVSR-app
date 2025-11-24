@@ -8,7 +8,7 @@ from celery import shared_task
 
 from app.config import settings
 from app.core.database import SessionLocal
-from app.models.task import Task, TaskStatus
+from app.models.task import Task, TaskStatus, Upload
 
 
 @shared_task(name="app.tasks.cleanup_storage")
@@ -28,14 +28,11 @@ def cleanup_storage():
             .all()
         )
 
+        # 先删除任务及其输出文件，并记录涉及的 upload_id，避免在有其他任务引用时误删源文件。
+        upload_ids: set = set()
         for task in tasks:
-            # 删除输入文件
-            if task.input_file_path and os.path.exists(task.input_file_path):
-                try:
-                    Path(task.input_file_path).unlink()
-                    removed_inputs += 1
-                except OSError:
-                    pass
+            if task.upload_id:
+                upload_ids.add(task.upload_id)
 
             # 删除输出文件
             if task.output_file_path and os.path.exists(task.output_file_path):
@@ -47,6 +44,29 @@ def cleanup_storage():
 
             db.delete(task)
             removed_tasks += 1
+
+        db.commit()
+
+        # 再根据 upload_id 检查是否还有任务引用该上传记录，若没有则删除源文件和 uploads 记录。
+        for upload_id in upload_ids:
+            upload = db.query(Upload).filter(Upload.id == upload_id).first()
+            if not upload:
+                continue
+
+            remaining_tasks = (
+                db.query(Task).filter(Task.upload_id == upload.id).count()
+            )
+            if remaining_tasks > 0:
+                continue
+
+            if upload.file_path and os.path.exists(upload.file_path):
+                try:
+                    Path(upload.file_path).unlink()
+                    removed_inputs += 1
+                except OSError:
+                    pass
+
+            db.delete(upload)
 
         db.commit()
     finally:

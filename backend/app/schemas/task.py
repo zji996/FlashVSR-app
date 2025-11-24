@@ -1,7 +1,7 @@
 """任务相关的Pydantic schemas."""
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal, Optional, Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -30,6 +30,44 @@ class TaskParameters(BaseModel):
         ge=128,
         description="预处理缩放宽度（像素，建议常见档位如 640/768/896/960/1024/1152/1280）",
     )
+    preserve_aspect_ratio: bool = Field(
+        default=False,
+        description="是否在导出阶段按输入视频长宽比对结果视频重新缩放",
+    )
+
+
+class ParameterOption(BaseModel):
+    """单个参数的推荐选项或预设值描述."""
+
+    label: str
+    value: Any
+    description: Optional[str] = None
+
+
+class TaskParameterField(BaseModel):
+    """用于前端自动生成表单的参数字段元数据."""
+
+    name: str
+    label: str
+    description: Optional[str] = None
+    field_type: Literal["number", "boolean"]
+    min: Optional[float] = None
+    max: Optional[float] = None
+    step: Optional[float] = None
+    required: bool = True
+    default: Optional[Any] = None
+    recommended: list[ParameterOption] = Field(default_factory=list)
+    ui_group: Literal["preprocess", "advanced", "other"] = "advanced"
+
+
+class TaskPresetProfile(BaseModel):
+    """预设组合配置（例如“预处理 960px + 2× 超分接近 1080p”）。"""
+
+    key: str
+    label: str
+    description: Optional[str] = None
+    preprocess_width: int
+    scale: float
 
 
 class VideoInfo(BaseModel):
@@ -101,3 +139,10 @@ class TaskProgressResponse(BaseModel):
     total_frames: Optional[int]
     estimated_time_remaining: Optional[int]
     error_message: Optional[str] = None
+
+
+class TaskParameterSchemaResponse(BaseModel):
+    """前端自动生成任务参数表单所需的元数据."""
+
+    fields: list[TaskParameterField]
+    presets: list[TaskPresetProfile] = Field(default_factory=list)

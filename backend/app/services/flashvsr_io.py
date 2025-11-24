@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from app.config import settings
 from app.services.video_streaming import StreamingVideoTensor
+from app.services.video_metadata import VideoMetadataService
 
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,23 @@ def upscale_and_crop(img: Image.Image, scale: float, tW: int, tH: int) -> Image.
     l = (sW - tW) // 2
     t = (sH - tH) // 2
     return up.crop((l, t, l + tW, t + tH))
+
+
+def upscale_and_pad(
+    img: Image.Image,
+    scale: float,
+    sW: int,
+    sH: int,
+    tW: int,
+    tH: int,
+) -> Image.Image:
+    """放大并用黑边补足到目标尺寸."""
+    up = img.resize((sW, sH), Image.BICUBIC)
+    canvas = Image.new("RGB", (tW, tH), (0, 0, 0))
+    l = (tW - sW) // 2
+    t = (tH - sH) // 2
+    canvas.paste(up, (l, t))
+    return canvas
 
 
 def pil_to_tensor(img: Image.Image, dtype: torch.dtype, device: str) -> torch.Tensor:
@@ -218,36 +236,32 @@ def should_stream_video(
 def load_frame_tensor(
     reader,
     frame_idx: int,
-    scale: float,
-    target_width: int,
-    target_height: int,
+    transform: Callable[[Image.Image], Image.Image],
     dtype: torch.dtype,
     device: str,
 ) -> torch.Tensor:
     """从 imageio 读取单帧并转换为模型输入 tensor."""
     img = Image.fromarray(reader.get_data(frame_idx)).convert("RGB")
-    img_out = upscale_and_crop(img, scale, target_width, target_height)
+    img_out = transform(img)
     return pil_to_tensor(img_out, dtype, device)
 
 
 def frame_array_to_tensor(
     frame_array,
-    scale: float,
-    target_width: int,
-    target_height: int,
+    transform: Callable[[Image.Image], Image.Image],
     dtype: torch.dtype,
     device: str,
 ) -> torch.Tensor:
     """将 ndarray 帧转换为模型输入 tensor."""
     img = Image.fromarray(frame_array).convert("RGB")
-    img_out = upscale_and_crop(img, scale, target_width, target_height)
+    img_out = transform(img)
     return pil_to_tensor(img_out, dtype, device)
 
 
 def build_streaming_video_tensor(
     reader,
     indices: list[int],
-    scale: float,
+    transform: Callable[[Image.Image], Image.Image],
     target_width: int,
     target_height: int,
     dtype: torch.dtype,
@@ -268,9 +282,7 @@ def build_streaming_video_tensor(
     def _process(frame_array) -> torch.Tensor:
         return frame_array_to_tensor(
             frame_array,
-            scale,
-            target_width,
-            target_height,
+            transform,
             dtype,
             target_device,
         )
@@ -315,12 +327,15 @@ def _count_frames(reader, meta: dict) -> int:
 
 def prepare_input(
     path: str,
-    scale: float,
     device: str,
+    build_transform: Callable[[int, int], tuple[Callable[[Image.Image], Image.Image], int, int]],
+    dtype: torch.dtype = torch.bfloat16,
 ) -> tuple[torch.Tensor, int, int, int, int]:
-    """读取输入视频并转换为 FlashVSR Tiny Long 所需的 LQ tensor."""
-    dtype = torch.bfloat16
+    """读取输入视频并转换为 FlashVSR 所需的 LQ tensor。
 
+    该函数专注于 IO 与流式缓冲，具体的缩放与裁剪/填充策略通过 `build_transform`
+    注入，从而将「长宽比策略」与底层视频读取解耦。
+    """
     reader = imageio.get_reader(path)
     first_frame = Image.fromarray(reader.get_data(0)).convert("RGB")
     w0, h0 = first_frame.size
@@ -338,8 +353,15 @@ def prepare_input(
 
     print(f"原始分辨率: {w0}x{h0}, 原始帧数: {total_frames}, FPS: {fps}")
 
-    _, _, tW, tH = compute_scaled_dims(w0, h0, scale)
-    print(f"目标分辨率: {tW}x{tH} (缩放 {scale}x)")
+    transform, tW, tH = build_transform(w0, h0)
+
+    frames: list[torch.Tensor] = []
+    target_frame_device = "cpu" if device == "cuda" else device
+    indices = list(range(total_frames)) + [total_frames - 1] * 4
+    F = largest_8n1_leq(len(indices))
+    indices = indices[:F]
+
+    print(f"处理帧数: {F}")
 
     frames: list[torch.Tensor] = []
     target_frame_device = "cpu" if device == "cuda" else device
@@ -357,7 +379,7 @@ def prepare_input(
             video_tensor = build_streaming_video_tensor(
                 reader,
                 indices,
-                scale,
+                transform,
                 tW,
                 tH,
                 dtype,
@@ -370,9 +392,7 @@ def prepare_input(
                     load_frame_tensor(
                         reader,
                         i,
-                        scale,
-                        tW,
-                        tH,
+                        transform,
                         dtype,
                         target_frame_device,
                     )
@@ -544,3 +564,83 @@ def export_video_from_tensor(
         return len(frames)
     finally:
         del output_video
+
+
+def rescale_video_to_aspect(
+    path: str,
+    source_width: int,
+    source_height: int,
+    scale: float,
+) -> None:
+    """
+    根据源视频分辨率与放大倍数，在导出阶段通过 **裁剪** 去除 padding 的黑边，
+    使结果视频恢复为按 `scale` 放大后的长宽比，不再对画面做二次缩放。
+
+    该函数会在原地重写 `path` 指向的文件。
+    """
+    if source_width <= 0 or source_height <= 0 or scale <= 0:
+        return
+
+    metadata = VideoMetadataService.extract_metadata(path)
+    out_width = metadata.width
+    out_height = metadata.height
+    if not out_width or not out_height:
+        return
+
+    # 目标内容尺寸：按 scale 放大后的分辨率（与预处理视频长宽比一致）。
+    target_width = int(round(source_width * scale))
+    target_height = int(round(source_height * scale))
+
+    # 不要超过当前输出尺寸。
+    target_width = min(target_width, out_width)
+    target_height = min(target_height, out_height)
+
+    # 保证为正且为偶数，避免部分编码器不接受奇数维度。
+    if target_width <= 0 or target_height <= 0:
+        return
+    if target_width % 2 != 0:
+        target_width = max(2, target_width - 1)
+    if target_height % 2 != 0:
+        target_height = max(2, target_height - 1)
+
+    # 若尺寸本身已经匹配，则无需裁剪。
+    if target_width == out_width and target_height == out_height:
+        return
+
+    # 居中裁剪，尽量对称去除上下/左右的黑边。
+    offset_x = max(0, (out_width - target_width) // 2)
+    offset_y = max(0, (out_height - target_height) // 2)
+
+    print(
+        f"按原始长宽比裁剪输出视频: 源内容 {source_width}x{source_height} → 目标内容 {target_width}x{target_height} "
+        f"(缩放 {scale}x, 当前输出 {out_width}x{out_height})"
+    )
+
+    tmp_out = str(Path(path).with_suffix(".aspect.tmp.mp4"))
+    cmd = [
+        settings.FFMPEG_BINARY,
+        "-y",
+        "-i",
+        path,
+        "-vf",
+        f"crop={target_width}:{target_height}:{offset_x}:{offset_y}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        settings.PREPROCESS_FFMPEG_PRESET,
+        "-crf",
+        str(settings.PREPROCESS_FFMPEG_CRF),
+        "-c:a",
+        "copy",
+        tmp_out,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        Path(tmp_out).unlink(missing_ok=True)
+        raise RuntimeError(
+            f"FFmpeg 导出阶段长宽比裁剪失败（{result.returncode}）: "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+
+    Path(path).unlink(missing_ok=True)
+    Path(tmp_out).replace(path)

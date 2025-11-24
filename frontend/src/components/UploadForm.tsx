@@ -8,33 +8,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
 import { tasksApi } from '../api/tasks';
 import { systemApi } from '../api/system';
-import { ModelVariant, type TaskParameters } from '../types';
+import {
+  ModelVariant,
+  type TaskParameters,
+  type TaskParameterFieldMeta,
+  type TaskPresetProfileMeta,
+} from '../types';
 import Snackbar from './Snackbar';
 
-const PREPROCESS_WIDTH_OPTIONS = [640, 768, 896, 960, 1024, 1152, 1280];
-const PRESET_PROFILES = [
-  {
-    key: '1080p',
-    label: '接近 1080p',
-    description: '预处理 960px + 2× 超分，适合高清流媒体素材',
-    preprocess_width: 960,
-    scale: 2.0,
-  },
-  {
-    key: '2k',
-    label: '锐利 2K',
-    description: '预处理 1152px + 2×，在 16:9 视频上接近 2304px',
-    preprocess_width: 1152,
-    scale: 2.0,
-  },
-  {
-    key: 'fast',
-    label: '快速出图',
-    description: '预处理 768px + 2×，更省显存的批量模式',
-    preprocess_width: 768,
-    scale: 2.0,
-  },
-];
+const FALLBACK_PREPROCESS_WIDTH_OPTIONS = [640, 768, 896, 960, 1024, 1152, 1280];
 const SUPPORTED_EXTENSIONS = [
   '.mp4',
   '.mov',
@@ -57,6 +39,11 @@ export default function UploadForm() {
     queryFn: systemApi.getStatus,
     staleTime: 10000,
   });
+  const { data: parameterSchema } = useQuery({
+    queryKey: ['task-parameter-schema'],
+    queryFn: tasksApi.getParameterSchema,
+    staleTime: Infinity,
+  });
   const [file, setFile] = useState<File | null>(null);
   const [parameters, setParameters] = useState<TaskParameters>({
     scale: 2.0,
@@ -65,6 +52,7 @@ export default function UploadForm() {
     seed: 0,
     model_variant: ModelVariant.TINY_LONG,
     preprocess_width: 640,
+    preserve_aspect_ratio: false,
   });
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [clientError, setClientError] = useState<string | null>(null);
@@ -85,9 +73,29 @@ export default function UploadForm() {
 
   const readyVariants = systemStatus?.flashvsr?.ready_variants ?? {};
   const tinyLongReady = readyVariants?.[ModelVariant.TINY_LONG];
+
+  const preprocessField = parameterSchema?.fields.find(
+    (field) => field.name === 'preprocess_width'
+  );
+  const preprocessWidthOptions = useMemo(() => {
+    const values =
+      preprocessField?.recommended
+        ?.map((opt) => Number(opt.value))
+        .filter((v) => Number.isFinite(v) && v > 0) ?? [];
+    if (values.length === 0) {
+      return FALLBACK_PREPROCESS_WIDTH_OPTIONS;
+    }
+    return Array.from(new Set(values)).sort((a, b) => a - b);
+  }, [preprocessField]);
+
+  const presetProfiles: TaskPresetProfileMeta[] = useMemo(
+    () => parameterSchema?.presets ?? [],
+    [parameterSchema]
+  );
+
   const preprocessWidthSelectValue = useCustomWidth
     ? 'custom'
-    : PREPROCESS_WIDTH_OPTIONS.includes(parameters.preprocess_width)
+    : preprocessWidthOptions.includes(parameters.preprocess_width)
       ? String(parameters.preprocess_width)
       : 'custom';
 
@@ -131,7 +139,7 @@ export default function UploadForm() {
       })();
 
       showSnackbar(`上传失败: ${message}`, 'error');
-      setClientError(message);
+          setClientError(message);
     },
   });
 
@@ -171,12 +179,13 @@ export default function UploadForm() {
     return aligned > 0 ? aligned : null;
   }, [parameters.preprocess_width, parameters.scale]);
 
-  const isPresetActive = (preset: (typeof PRESET_PROFILES)[number]) =>
-    parameters.preprocess_width === preset.preprocess_width && parameters.scale === preset.scale;
+  const isPresetActive = (preset: TaskPresetProfileMeta) =>
+    parameters.preprocess_width === preset.preprocess_width &&
+    parameters.scale === preset.scale;
 
   const disableSubmit = !file || uploadMutation.isPending || tinyLongReady === false;
 
-  const handlePresetClick = (preset: (typeof PRESET_PROFILES)[number]) => {
+  const handlePresetClick = (preset: TaskPresetProfileMeta) => {
     setParameters({
       ...parameters,
       preprocess_width: preset.preprocess_width,
@@ -275,7 +284,7 @@ export default function UploadForm() {
                 }}
                 className="input"
               >
-                {PREPROCESS_WIDTH_OPTIONS.map((width) => (
+                {preprocessWidthOptions.map((width) => (
                   <option key={width} value={width}>
                     {width} px
                   </option>
@@ -332,7 +341,7 @@ export default function UploadForm() {
               </button>
             </div>
             <div className="grid grid-cols-1 gap-3">
-              {PRESET_PROFILES.map((preset) => {
+              {presetProfiles.map((preset) => {
                 const active = isPresetActive(preset);
                 return (
                   <button
@@ -371,71 +380,83 @@ export default function UploadForm() {
           </div>
           {showAdvanced && (
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">超分倍数 (Scale)</label>
-              <input
-                type="number"
-                min="1"
-                max="8"
-                step="0.1"
-                value={parameters.scale}
-                onChange={(e) => setParameters({ ...parameters, scale: parseFloat(e.target.value) })}
-                className="input"
-              />
-              <p className="text-xs text-gray-500 mt-1">推荐值: 2.0</p>
-            </div>
+              {parameterSchema?.fields
+                .filter((field) => field.ui_group === 'advanced')
+                .map((field: TaskParameterFieldMeta) => {
+                  const key = field.name as keyof TaskParameters;
+                  const value = parameters[key] as number | boolean | undefined;
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">稀疏比率 (Sparse Ratio)</label>
-              <input
-                type="number"
-                min="1"
-                max="4"
-                step="0.1"
-                value={parameters.sparse_ratio}
-                onChange={(e) =>
-                  setParameters({
-                    ...parameters,
-                    sparse_ratio: parseFloat(e.target.value),
-                  })
-                }
-                className="input"
-              />
-              <p className="text-xs text-gray-500 mt-1">推荐值: 1.5 (快) 或 2.0 (稳定)</p>
-            </div>
+                  if (field.field_type === 'boolean') {
+                    const checked = Boolean(value);
+                    return (
+                      <div
+                        key={field.name}
+                        className="sm:col-span-2 lg:col-span-4 flex items-center gap-2 mt-2"
+                      >
+                        <input
+                          id={field.name}
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) =>
+                            setParameters({
+                              ...parameters,
+                              [key]: e.target.checked,
+                            })
+                          }
+                          className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                        />
+                        <div className="flex flex-col gap-1">
+                          <label htmlFor={field.name} className="text-sm text-gray-700">
+                            {field.label}
+                          </label>
+                          {field.description && (
+                            <p className="text-xs text-gray-500">{field.description}</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">局部范围 (Local Range)</label>
-              <input
-                type="number"
-                min="7"
-                max="15"
-                step="2"
-                value={parameters.local_range}
-                onChange={(e) =>
-                  setParameters({
-                    ...parameters,
-                    local_range: parseInt(e.target.value),
-                  })
-                }
-                className="input"
-              />
-              <p className="text-xs text-gray-500 mt-1">推荐值: 9 (更锐利) 或 11 (更稳定)</p>
-            </div>
+                  const min = field.min ?? undefined;
+                  const max = field.max ?? undefined;
+                  const step = field.step ?? undefined;
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">随机种子 (Seed)</label>
-              <input
-                type="number"
-                min="0"
-                value={parameters.seed}
-                onChange={(e) => setParameters({ ...parameters, seed: parseInt(e.target.value) })}
-                className="input"
-              />
-              <p className="text-xs text-gray-500 mt-1">0 为随机</p>
+                  return (
+                    <div key={field.name}>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        {field.label}
+                      </label>
+                      <input
+                        type="number"
+                        min={min}
+                        max={max ?? undefined}
+                        step={step}
+                        value={value ?? ''}
+                        onChange={(e) =>
+                          setParameters({
+                            ...parameters,
+                            [key]: e.target.value === '' ? value : Number(e.target.value),
+                          })
+                        }
+                        className="input"
+                      />
+                      {field.recommended.length > 0 ? (
+                        <p className="text-xs text-gray-500 mt-1">
+                          推荐值:{' '}
+                          {field.recommended
+                            .map((opt) => opt.description || opt.label)
+                            .join(' / ')}
+                        </p>
+                      ) : (
+                        field.description && (
+                          <p className="text-xs text-gray-500 mt-1">{field.description}</p>
+                        )
+                      )}
+                    </div>
+                  );
+                })}
             </div>
-          </div>
-        )}
+          )}
         </div>
       </div>
 

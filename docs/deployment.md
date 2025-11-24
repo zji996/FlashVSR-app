@@ -326,7 +326,7 @@ export FLASHVSR_PP_OVERLAP_MODE=basic   # 或 aggressive，启用更激进的 3-
   - 该上限只影响 **输入 LQ 流** 在 CPU 内存中最多缓存多少帧，与输出分片（`FLASHVSR_CHUNKED_SAVE_*`）无直接关系；模型每次只需要几十帧的滑动窗口（约 8n+1 帧）即可连续推理。
   - 实际占用可按“目标分辨率 + 工作集帧数”估算：单帧占用近似为 `H * W * 3 * 2 bytes`（bfloat16），当前默认工作集不少于 50 帧。例如 2×1080p（模型侧约 1920×1024）时，50 帧约 0.6 GiB，因此自动模式会预留约 0.6 GiB 级别的缓冲；更高分辨率或希望更充足的预读可通过调大 `FLASHVSR_STREAMING_LQ_MAX_BYTES` 显式放宽上限。
   - 若希望小视频一次载入 CPU 内存，可将该值设得更大（如 `32GB` 或 `64GB`）；若机器内存极度紧张，也可以显式下调该值，但需注意不要低于自动估算值，否则会被自动提升并记录警告日志。
-- `FLASHVSR_CHUNKED_SAVE_MIN_FRAMES` / `FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE` 控制输出分片写入：当帧数超过阈值时，Celery 会把超分结果按固定帧数拆成多个 `backend/storage/tmp/chunks_*/*.mp4`，由后台进程写盘，最后再用 `ffmpeg -f concat` 合并生成最终文件。设为 0 可恢复一次性写入。
+- `FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE` 控制输出分片写入：Celery 会始终把超分结果按固定帧数拆成多个 `backend/storage/tmp/chunks_*/*.mp4`，由后台进程写盘，最后再用 `ffmpeg -f concat` 合并生成最终文件。所有任务统一走分片写入与合并逻辑，便于在失败时基于分片恢复部分结果。
 - 若推理过程中任务失败或被取消，系统会把已经写盘的分片自动合并成 `<输出文件名>_partial.mp4` 并保存在结果目录，同时在错误信息中提示路径，便于用户取走已完成的部分视频。
 - `FLASHVSR_EXPORT_VIDEO_QUALITY` 控制最终结果视频在导出阶段的编码质量（整数 1–10，默认 6，数值越大质量越高、码率与文件体积越大）。该参数同时作用于普通导出与分片写盘两条路径，编码本身在 CPU 上完成，不额外占用 GPU 算力。
 - 需要在 GPU 推理前先做一次 FFmpeg 采样时，可在 `backend/.env` 中设置以下变量：

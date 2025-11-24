@@ -141,7 +141,19 @@ class ChunkedExportSession:
         self.processed = 0
         self.chunk_paths: list[Path] = []
         self.chunk_dir = settings.FLASHVSR_CHUNKED_SAVE_TMP_DIR / f"chunks_{uuid4().hex}"
-        self.chunk_size = settings.FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE
+
+        # 当环境变量设置为 0 时，按视频总帧数自动估算一个保守的分片大小，
+        # 目标是生成数量适中的分片（约 8～16 个），避免过多小文件或单个巨型分片。
+        base_chunk = settings.FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE
+        if base_chunk <= 0 and total_frames and total_frames > 0:
+            # 至少 60 帧一个分片，最多约 total_frames / 4，防止极端值。
+            target_chunks = 12
+            auto_size = max(total_frames // target_chunks, 60)
+            upper_bound = max(total_frames // 4, 60)
+            self.chunk_size = min(auto_size, upper_bound)
+        else:
+            self.chunk_size = base_chunk
+
         chunk_base_name = build_chunk_base_name(output_path)
         self._buffer: list[np.ndarray] = []
         self.audio_path = audio_path

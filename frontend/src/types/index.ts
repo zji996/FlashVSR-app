@@ -28,6 +28,30 @@ export interface TaskParameters {
   seed: number;
   model_variant: ModelVariant;
   preprocess_width: number;
+  preserve_aspect_ratio: boolean;
+}
+
+export type TaskParameterFieldType = 'number' | 'boolean';
+export type TaskParameterUiGroup = 'preprocess' | 'advanced' | 'other';
+
+export interface TaskParameterOption {
+  label: string;
+  value: number | string | boolean;
+  description?: string;
+}
+
+export interface TaskParameterFieldMeta {
+  name: keyof TaskParameters | string;
+  label: string;
+  description?: string;
+  field_type: TaskParameterFieldType;
+  min?: number | null;
+  max?: number | null;
+  step?: number | null;
+  required: boolean;
+  default?: number | boolean | string | null;
+  recommended: TaskParameterOption[];
+  ui_group: TaskParameterUiGroup;
 }
 
 export interface VideoInfo {
@@ -113,4 +137,17 @@ export interface SystemStatus {
     auto_download_used?: boolean;
     model_source?: 'ModelScope' | 'local' | null;
   };
+}
+
+export interface TaskPresetProfileMeta {
+  key: string;
+  label: string;
+  description?: string;
+  preprocess_width: number;
+  scale: number;
+}
+
+export interface TaskParameterSchema {
+  fields: TaskParameterFieldMeta[];
+  presets: TaskPresetProfileMeta[];
 }

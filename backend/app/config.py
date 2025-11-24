@@ -64,8 +64,8 @@ class Settings(BaseSettings):
     FLASHVSR_STREAMING_LQ_MAX_BYTES: int = 0
     FLASHVSR_STREAMING_PREFETCH_FRAMES: int = 25
     FLASHVSR_STREAMING_DECODE_THREADS: int = 2
-    FLASHVSR_CHUNKED_SAVE_MIN_FRAMES: int = 600
-    FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE: int = 120
+    # 分片写入的目标帧数；0 表示按视频长度自动估算一个保守值
+    FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE: int = 240
     FLASHVSR_CHUNKED_SAVE_TMP_DIR: Path = STORAGE_ROOT / "tmp"
     FLASHVSR_EXPORT_VIDEO_QUALITY: int = 6
     FFMPEG_BINARY: str = "ffmpeg"
@@ -145,6 +145,13 @@ class Settings(BaseSettings):
     def _validate_export_quality(cls, value: int) -> int:
         if not 1 <= value <= 10:
             raise ValueError("FLASHVSR_EXPORT_VIDEO_QUALITY must be between 1 and 10")
+        return value
+
+    @field_validator("FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE")
+    @classmethod
+    def _validate_chunk_size(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("FLASHVSR_CHUNKED_SAVE_CHUNK_SIZE must be >= 0")
         return value
 
     @classmethod

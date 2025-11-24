@@ -3,7 +3,13 @@
  */
 
 import apiClient from './client';
-import type { Task, TaskListResponse, TaskProgressResponse, TaskParameters } from '../types';
+import type {
+  Task,
+  TaskListResponse,
+  TaskProgressResponse,
+  TaskParameters,
+  TaskParameterSchema,
+} from '../types';
 
 export const tasksApi = {
   /**
@@ -18,6 +24,7 @@ export const tasksApi = {
     formData.append('seed', parameters.seed.toString());
     // 模型变体在后端固定为 tiny_long，这里不再发送字段，保留在 TaskParameters 仅用于响应展示。
     formData.append('preprocess_width', parameters.preprocess_width.toString());
+    formData.append('preserve_aspect_ratio', parameters.preserve_aspect_ratio.toString());
 
     const response = await apiClient.post<Task>('/api/tasks/', formData, {
       headers: {
@@ -98,5 +105,13 @@ export const tasksApi = {
    */
   getPreviewUrl(taskId: string): string {
     return `${apiClient.defaults.baseURL}/api/files/${taskId}/preview`;
+  },
+
+  /**
+   * 获取任务参数元数据（用于前端自动生成高级参数表单）
+   */
+  async getParameterSchema(): Promise<TaskParameterSchema> {
+    const response = await apiClient.get<TaskParameterSchema>('/api/tasks/parameter_schema');
+    return response.data;
   },
 };

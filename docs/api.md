@@ -29,6 +29,7 @@
   - `local_range`: 局部范围，7-15，默认 11。
   - `seed`: 随机种子，默认 0（当前服务端始终使用 Tiny Long 变体，客户端无需选择模型）。
   - `preprocess_width`: 预处理宽度（像素），默认 640，可选常用档位 640/768/896/960/1024/1152/1280。
+  - `preserve_aspect_ratio`: 是否在导出阶段按输入视频长宽比裁剪黑边恢复画面（不再对主体内容做二次缩放），布尔值，默认 `false`。
 - **响应**：`TaskResponse`（见下文）。
 - **错误**：400（文件/参数校验失败）、413（超出 `MAX_UPLOAD_SIZE`）或 500（保存失败）。
 - **备注**：文件写入成功并排队 Celery 任务后立即返回；视频宽高/帧率等详细 `video_info` 由后台处理阶段写回。
@@ -64,7 +65,7 @@
 
 | 模式 | 说明 |
 | --- | --- |
-| `TaskParameters` | `scale`、`sparse_ratio`、`local_range`、`seed`、`model_variant`，内置默认与字段限制。 |
+| `TaskParameters` | `scale`、`sparse_ratio`、`local_range`、`seed`、`model_variant`、`preprocess_width`、`preserve_aspect_ratio`，内置默认与字段限制。 |
 | `VideoInfo` | 视频尺寸、帧数、帧率、时长、推理时间等，可选字段。 |
 | `TaskResponse` | 任务元数据（`id`、`status`、`parameters`、`video_info`）、完成比例、帧计数与错误信息。 |
 | `TaskProgressResponse` | 进度视图（`task_id`, `status`, `progress`, `processed_frames`, `total_frames`, `estimated_time_remaining`, `error_message`）。 |

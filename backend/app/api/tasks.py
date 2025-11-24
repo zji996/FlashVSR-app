@@ -1,5 +1,7 @@
 """任务管理API路由."""
 
+import hashlib
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -8,18 +10,23 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
+from sqlalchemy.exc import IntegrityError
 
 from pydantic import ValidationError
 
 from app.core.database import get_db
 from app.core.celery_app import celery_app
-from app.models.task import Task, TaskStatus
+from app.models.task import Task, TaskStatus, Upload
 from app.services.flashvsr_service import FlashVSRService
 from app.schemas.task import (
     TaskResponse,
     TaskListResponse,
     TaskProgressResponse,
     TaskParameters,
+    TaskParameterField,
+    TaskParameterSchemaResponse,
+    ParameterOption,
+    TaskPresetProfile,
 )
 from app.tasks.flashvsr_task import process_video_task
 from app.config import settings
@@ -35,6 +42,7 @@ async def create_task(
     local_range: int = Form(default=11),
     seed: int = Form(default=0),
     preprocess_width: int = Form(default=640),
+    preserve_aspect_ratio: bool = Form(default=False),
     db: Session = Depends(get_db),
 ):
     """
@@ -91,17 +99,21 @@ async def create_task(
     upload_path = settings.UPLOAD_DIR / safe_filename
     
     # 保存上传的文件
+    hasher = hashlib.sha256()
     try:
         file.file.seek(0)
         with open(upload_path, "wb") as buffer:
             while chunk := await file.read(1024 * 1024):
                 buffer.write(chunk)
+                hasher.update(chunk)
     except Exception as e:
         if upload_path.exists():
             upload_path.unlink()
         raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}") from e
     finally:
         await file.close()
+
+    sha256 = hasher.hexdigest()
 
     # 创建任务记录
     try:
@@ -112,34 +124,222 @@ async def create_task(
             seed=seed,
             model_variant=settings.DEFAULT_MODEL_VARIANT,
             preprocess_width=preprocess_width,
+            preserve_aspect_ratio=preserve_aspect_ratio,
         )
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.errors()) from exc
-    
+
+    # 复用或创建 Upload 记录，避免同一文件多次上传时重复存储元数据。
+    upload = (
+        db.query(Upload)
+        .filter(Upload.sha256.isnot(None), Upload.sha256 == sha256)
+        .first()
+    )
+    if upload:
+        existing_path = upload.file_path
+        existing_ok = bool(existing_path) and os.path.exists(existing_path)
+
+        if existing_ok:
+            # 同一内容已存在且物理文件仍在，删除刚写入的重复文件以节省空间。
+            try:
+                if upload_path.exists() and existing_path != str(upload_path):
+                    upload_path.unlink()
+            except Exception:
+                pass
+        else:
+            # 数据库里记录的路径已失效（文件被手工删除或迁移），
+            # 使用本次上传的文件作为新的 canonical 路径，修复旧记录。
+            upload.file_path = str(upload_path)
+            upload.size = file_size
+
+        # 更新文件名为最近一次上传的名称，便于前端展示。
+        if upload.file_name != original_name:
+            upload.file_name = original_name
+    else:
+        upload = Upload(
+            file_name=original_name,
+            file_path=str(upload_path),
+            size=file_size,
+            sha256=sha256,
+        )
+        db.add(upload)
+        db.flush()  # 立即获得 upload.id 以便后续关联任务
+
     task = Task(
-        input_file_path=str(upload_path),
-        input_file_name=original_name,
-        parameters=parameters.model_dump(),
         status=TaskStatus.PENDING,
-        video_info={
-            "preprocess_width": preprocess_width,
-        },
         total_frames=None,
     )
-    
+    task.upload = upload
+    task.parameters = parameters.model_dump()
+    task.video_info = {
+        "preprocess_width": preprocess_width,
+    }
+
     db.add(task)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        message = str(exc.orig) if hasattr(exc, "orig") else str(exc)
+        if "uq_task_parameters_upload_config" in message:
+            raise HTTPException(
+                status_code=409,
+                detail="已存在使用相同输入文件与参数配置的任务，请勿重复提交。",
+            ) from exc
+        raise HTTPException(status_code=500, detail="创建任务失败") from exc
+
     db.refresh(task)
-    
+
     # 提交Celery任务
     celery_task = process_video_task.delay(str(task.id))
-    
+
     # 更新Celery任务ID
     task.celery_task_id = celery_task.id
     db.commit()
     db.refresh(task)
     
     return task
+
+
+@router.get("/parameter_schema", response_model=TaskParameterSchemaResponse)
+def get_task_parameter_schema() -> TaskParameterSchemaResponse:
+    """
+    返回任务参数的元数据，供前端自动生成表单使用。
+
+    - fields: 描述每个字段的标签、范围、推荐值等
+    - presets: 预设组合（例如“预处理 960px + 2× 超分接近 1080p”）
+    """
+    # 预处理宽度字段（左侧独立区块）
+    preprocess_field = TaskParameterField(
+        name="preprocess_width",
+        label="预处理宽度 (Preprocess Width)",
+        description=(
+            "预处理缩放宽度（像素，建议常见档位如 640/768/896/960/1024/1152/1280）。"
+        ),
+        field_type="number",
+        min=128,
+        max=None,
+        step=1,
+        required=True,
+        default=640,
+        recommended=[
+            ParameterOption(label="640 px", value=640),
+            ParameterOption(label="768 px", value=768),
+            ParameterOption(label="896 px", value=896),
+            ParameterOption(label="960 px", value=960),
+            ParameterOption(label="1024 px", value=1024),
+            ParameterOption(label="1152 px", value=1152),
+            ParameterOption(label="1280 px", value=1280),
+        ],
+        ui_group="preprocess",
+    )
+
+    # 高级参数字段（右侧折叠区）
+    advanced_fields: list[TaskParameterField] = [
+        TaskParameterField(
+            name="scale",
+            label="超分倍数 (Scale)",
+            description="放大倍数，过高会显著增加显存和时间开销。",
+            field_type="number",
+            min=1.0,
+            max=8.0,
+            step=0.1,
+            required=True,
+            default=settings.DEFAULT_SCALE,
+            recommended=[
+                ParameterOption(label="默认", value=2.0, description="推荐值: 2.0"),
+            ],
+            ui_group="advanced",
+        ),
+        TaskParameterField(
+            name="sparse_ratio",
+            label="稀疏比率 (Sparse Ratio)",
+            description="控制 WanVSR 稀疏注意力的稀疏度，数值越大越稳定但越慢。",
+            field_type="number",
+            min=1.0,
+            max=4.0,
+            step=0.1,
+            required=True,
+            default=2.0,
+            recommended=[
+                ParameterOption(label="1.5（更快）", value=1.5, description="推荐值: 1.5 (快)"),
+                ParameterOption(label="2.0（更稳定）", value=2.0, description="推荐值: 2.0 (稳定)"),
+            ],
+            ui_group="advanced",
+        ),
+        TaskParameterField(
+            name="local_range",
+            label="局部范围 (Local Range)",
+            description="控制局部注意力窗口大小，影响锐度与稳定性。",
+            field_type="number",
+            min=7,
+            max=15,
+            step=2,
+            required=True,
+            default=11,
+            recommended=[
+                ParameterOption(label="9（更锐利）", value=9, description="推荐值: 9 (更锐利)"),
+                ParameterOption(label="11（更稳定）", value=11, description="推荐值: 11 (更稳定)"),
+            ],
+            ui_group="advanced",
+        ),
+        TaskParameterField(
+            name="seed",
+            label="随机种子 (Seed)",
+            description="控制随机性；设置为 0 表示每次随机。",
+            field_type="number",
+            min=0,
+            max=None,
+            step=1,
+            required=True,
+            default=0,
+            recommended=[
+                ParameterOption(label="0（随机）", value=0, description="0 为随机"),
+            ],
+            ui_group="advanced",
+        ),
+        TaskParameterField(
+            name="preserve_aspect_ratio",
+            label="按原始长宽比裁剪黑边",
+            description=(
+                "导出时按输入视频的长宽比裁剪黑边恢复画面（会多一次轻量级重编码）。"
+            ),
+            field_type="boolean",
+            required=True,
+            default=False,
+            recommended=[],
+            ui_group="advanced",
+        ),
+    ]
+
+    presets: list[TaskPresetProfile] = [
+        TaskPresetProfile(
+            key="1080p",
+            label="接近 1080p",
+            description="预处理 960px + 2× 超分，适合高清流媒体素材",
+            preprocess_width=960,
+            scale=2.0,
+        ),
+        TaskPresetProfile(
+            key="2k",
+            label="锐利 2K",
+            description="预处理 1152px + 2×，在 16:9 视频上接近 2304px",
+            preprocess_width=1152,
+            scale=2.0,
+        ),
+        TaskPresetProfile(
+            key="fast",
+            label="快速出图",
+            description="预处理 768px + 2×，更省显存的批量模式",
+            preprocess_width=768,
+            scale=2.0,
+        ),
+    ]
+
+    return TaskParameterSchemaResponse(
+        fields=[preprocess_field, *advanced_fields],
+        presets=presets,
+    )
 
 
 @router.get("/", response_model=TaskListResponse)
@@ -224,24 +424,42 @@ def delete_task(
 ):
     """删除任务及相关文件."""
     task = db.query(Task).filter(Task.id == task_id).first()
-    
+
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    
+
+    upload = task.upload
+
     # 删除文件
     try:
-        if os.path.exists(task.input_file_path):
-            os.remove(task.input_file_path)
-        
+        # 仅在没有其他任务引用同一上传记录时才删除源文件
+        if upload and upload.file_path:
+            other_tasks_count = (
+                db.query(Task)
+                .filter(Task.upload_id == upload.id, Task.id != task.id)
+                .count()
+            )
+            if other_tasks_count == 0 and os.path.exists(upload.file_path):
+                os.remove(upload.file_path)
+
         if task.output_file_path and os.path.exists(task.output_file_path):
             os.remove(task.output_file_path)
     except Exception as e:
         print(f"文件删除失败: {str(e)}")
-    
-    # 删除数据库记录
+
+    # 删除数据库记录（同时触发 task_parameters / task_video_info 的级联删除）
     db.delete(task)
+
+    # 若不再有任务引用该上传记录，则一并清理 uploads 记录
+    if upload:
+        remaining = (
+            db.query(Task).filter(Task.upload_id == upload.id).count()
+        )
+        if remaining == 0:
+            db.delete(upload)
+
     db.commit()
-    
+
     return None
 
 

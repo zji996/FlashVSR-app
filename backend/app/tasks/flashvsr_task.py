@@ -53,7 +53,11 @@ def process_video_task(self, task_id: str):
         
         # 准备文件路径
         input_path = task.input_file_path
-        output_filename = f"{Path(task.input_file_name).stem}_flashvsr.mp4"
+        # 为避免同一输入文件、多组参数的任务互相覆盖结果，这里在输出文件名中加入
+        # 精简版的 task_id 后缀，确保每个任务对应一个唯一的结果文件。
+        task_suffix = UUID(task_id).hex[:8]
+        output_stem = Path(task.input_file_name).stem
+        output_filename = f"{output_stem}_flashvsr_{task_suffix}.mp4"
         output_path = str(settings.RESULT_DIR / output_filename)
         
         # 获取处理参数
@@ -64,6 +68,7 @@ def process_video_task(self, task_id: str):
         local_range = validated_params.local_range or settings.DEFAULT_LOCAL_RANGE
         seed = validated_params.seed or settings.DEFAULT_SEED
         model_variant = validated_params.model_variant or settings.DEFAULT_MODEL_VARIANT
+        preserve_aspect_ratio = getattr(validated_params, "preserve_aspect_ratio", False)
 
         metadata = VideoMetadataService.extract_metadata(input_path)
         preprocessor = VideoPreprocessor()
@@ -86,7 +91,18 @@ def process_video_task(self, task_id: str):
                 scale,
             )
 
-        # 更新视频信息
+        # 更新上传记录的基础元信息（按源文件维度聚合，便于统计与查询）。
+        upload = task.upload
+        if upload is not None:
+            upload.width = metadata.width or upload.width
+            upload.height = metadata.height or upload.height
+            upload.fps = metadata.fps or upload.fps
+            upload.total_frames = metadata.total_frames or upload.total_frames
+            upload.duration = metadata.duration or upload.duration
+            upload.bit_rate = metadata.bit_rate or upload.bit_rate
+            upload.avg_frame_rate = metadata.avg_frame_rate or upload.avg_frame_rate
+
+        # 更新任务级视频信息（包含预处理与预测输出的细节）。
         video_info = task.video_info or {}
         video_info.update({
             "width": effective_metadata.width or video_info.get("width"),
@@ -146,6 +162,9 @@ def process_video_task(self, task_id: str):
                 model_variant=model_variant,
                 progress_callback=progress_callback,
                 audio_path=audio_path,
+                preserve_aspect_ratio=preserve_aspect_ratio,
+                source_width=effective_metadata.width or metadata.width,
+                source_height=effective_metadata.height or metadata.height,
             )
         finally:
             if preprocess_result.applied:

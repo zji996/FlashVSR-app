@@ -61,6 +61,11 @@ if [ ! -d "${FRONTEND_DIR}/node_modules" ]; then
 fi
 
 mkdir -p "$LOG_DIR"
+# 每次启动 dev 前清理上一轮留下的日志文件，避免多轮运行时日志混在一起。
+if compgen -G "${LOG_DIR}/*.log" >/dev/null 2>&1; then
+  echo "[FlashVSR] 清理现有 dev 日志：${LOG_DIR}/*.log"
+  rm -f "${LOG_DIR}"/*.log || true
+fi
 
 echo "[FlashVSR] 如尚未启动 Postgres/Redis，请先在仓库根目录手动执行："
 echo "  docker compose -f docker-compose.dev.yml up -d"
